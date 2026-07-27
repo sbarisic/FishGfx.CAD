@@ -214,6 +214,7 @@ typedef struct fgcad_collector_system_spec
 	double outlet_stub_length;
 	double merge_length;
 	double overlap_length;
+	double outlet_transition_setback;
 	double branch_end_handle_length;
 } fgcad_collector_system_spec;
 

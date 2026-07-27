@@ -79,6 +79,8 @@ public sealed class CadCollectorInlet
 
 public sealed class CadCollectorSystem
 {
+	public const double OutletTransitionSetbackDiameterRatio = 0.40;
+
 	private long generationRevision;
 
 	public Guid Id { get; set; } = Guid.NewGuid();
@@ -87,9 +89,9 @@ public sealed class CadCollectorSystem
 
 	public CadFrame OutletFrame { get; set; } = CollectorFrameDefaults.Outlet;
 
-	// Retained for graph.json v3 compatibility and layout-preset defaults.
-	// Branch-only exact geometry does not generate an outlet profile, separate
-	// outlet stub, or tapered merge core.
+	// The exact collector lofts its outer and gas cut outlines directly to this
+	// fixed outlet profile. Legacy stub and merge values remain serialized for
+	// graph.json compatibility but do not create an outlet pipe.
 	public PipeProfile OutletProfile { get; set; } = new(63.5, 2);
 
 	public double OutletStubLength { get; set; } = 50;
@@ -98,6 +100,9 @@ public sealed class CadCollectorSystem
 
 	public double OverlapLength { get; set; } = 12;
 
+	public double OutletTransitionSetback { get; set; } =
+		63.5 * OutletTransitionSetbackDiameterRatio;
+
 	// Preferred shared end-handle length. Each solved branch may adjust it to
 	// preserve its endpoint frame and bend-radius clearance.
 	public double BranchEndHandleLength { get; set; } = 35;
@@ -105,6 +110,12 @@ public sealed class CadCollectorSystem
 	public List<CadCollectorInlet> Inlets { get; set; } = new();
 
 	public long GenerationRevision => Interlocked.Read(ref generationRevision);
+
+	public static double DefaultOutletTransitionSetback(PipeProfile outletProfile)
+	{
+		return outletProfile.OuterDiameterMillimetres
+			* OutletTransitionSetbackDiameterRatio;
+	}
 
 	public bool IsResolved { get; set; } = true;
 
@@ -224,6 +235,7 @@ public sealed class CadCollectorSystem
 			OutletStubLength = OutletStubLength,
 			MergeLength = MergeLength,
 			OverlapLength = OverlapLength,
+			OutletTransitionSetback = OutletTransitionSetback,
 			BranchEndHandleLength = BranchEndHandleLength,
 			Inlets = Inlets.Select(inlet => inlet.DeepClone()).ToList(),
 			IsResolved = IsResolved,

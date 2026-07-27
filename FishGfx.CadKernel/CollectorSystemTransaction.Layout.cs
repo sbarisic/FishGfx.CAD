@@ -438,6 +438,12 @@ public sealed partial class CollectorSystemTransaction
 			error = "The collector branch end handle must be finite and positive.";
 			return false;
 		}
+		if (!double.IsFinite(system.OutletTransitionSetback)
+			|| system.OutletTransitionSetback <= 0)
+		{
+			error = "The collector outlet transition setback must be finite and positive.";
+			return false;
+		}
 		if (system.Inlets.Any(inlet => inlet == null)
 			|| system.Inlets.Any(inlet => inlet.Id == Guid.Empty || string.IsNullOrWhiteSpace(inlet.Name))
 			|| system.Inlets.Select(inlet => inlet.Id).Distinct().Count() != system.Inlets.Count)

@@ -173,6 +173,7 @@ public sealed class CorsaFlangeCollectorTests
 		await using CorsaCollectorFixture fixture = await CorsaCollectorFixture.CreateAsync(
 			cancellationToken
 		);
+		Assert.Equal(25.4, fixture.Collector.OutletTransitionSetback, 9);
 		bool staging = false;
 		try
 		{

@@ -15,7 +15,7 @@ public sealed class RunnerCollectionLoadResult
 public static class RunnerCollectionJson
 {
 	public const string Schema = "fishgfx.runner-collection";
-	public const int CurrentVersion = 5;
+	public const int CurrentVersion = 6;
 
 	private static readonly JsonSerializerOptions Options = new()
 	{
@@ -206,7 +206,7 @@ public static class RunnerCollectionJson
 								item.GetRawText(),
 								Options
 							);
-							collectors.Add(FromDto(dto));
+							collectors.Add(FromDto(dto, versionNumber));
 						}
 						catch (Exception exception) when (exception is JsonException
 							or ArgumentException or InvalidOperationException or InvalidDataException)
@@ -267,6 +267,7 @@ public static class RunnerCollectionJson
 			OutletStubLength = system.OutletStubLength,
 			MergeLength = system.MergeLength,
 			OverlapLength = system.OverlapLength,
+			OutletTransitionSetback = system.OutletTransitionSetback,
 			BranchEndHandleLength = system.BranchEndHandleLength,
 			GenerationRevision = system.GenerationRevision,
 			ExactBuild = system.ExactBuild.Snapshot,
@@ -292,7 +293,7 @@ public static class RunnerCollectionJson
 		};
 	}
 
-	private static CadCollectorSystem FromDto(CollectorDto dto)
+	private static CadCollectorSystem FromDto(CollectorDto dto, int version)
 	{
 		if (dto == null || dto.Id == Guid.Empty || string.IsNullOrWhiteSpace(dto.Name)
 			|| dto.GenerationRevision < 0
@@ -300,6 +301,13 @@ public static class RunnerCollectionJson
 		{
 			throw new InvalidDataException("A collector requires an ID, name, and at least two inlets.");
 		}
+		double outletTransitionSetback = dto.OutletTransitionSetback
+			?? (version <= 5
+				? Math.Max(
+					dto.OverlapLength,
+					CadCollectorSystem.DefaultOutletTransitionSetback(dto.OutletProfile))
+				: throw new InvalidDataException(
+					"A version-six collector requires an outlet transition setback."));
 		CadCollectorSystem system = new()
 		{
 			Id = dto.Id,
@@ -309,6 +317,7 @@ public static class RunnerCollectionJson
 			OutletStubLength = dto.OutletStubLength,
 			MergeLength = dto.MergeLength,
 			OverlapLength = dto.OverlapLength,
+			OutletTransitionSetback = outletTransitionSetback,
 			BranchEndHandleLength = dto.BranchEndHandleLength,
 			Inlets = dto.Inlets.Select(item =>
 			{
@@ -443,6 +452,7 @@ public static class RunnerCollectionJson
 		public double OutletStubLength { get; set; }
 		public double MergeLength { get; set; }
 		public double OverlapLength { get; set; }
+		public double? OutletTransitionSetback { get; set; }
 		public double BranchEndHandleLength { get; set; }
 		public long GenerationRevision { get; set; }
 		public CadExactBuildSnapshot? ExactBuild { get; set; }

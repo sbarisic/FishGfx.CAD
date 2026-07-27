@@ -723,6 +723,7 @@ fgcad_status fgcad_document_build_collector_system(
 			return same_frame(left.outlet_frame, right.outlet_frame)
 				&& left.branch_end_handle_length == right.branch_end_handle_length
 				&& left.overlap_length == right.overlap_length
+				&& left.outlet_transition_setback == right.outlet_transition_setback
 				&& same_profile(left.outlet_profile, right.outlet_profile);
 		};
 		auto same_inlet_geometry = [&](const fgcad_collector_inlet& left,
@@ -795,6 +796,12 @@ fgcad_status fgcad_document_build_collector_system(
 			throw std::invalid_argument(
 				"The collector gas interface overlap must be finite and positive.");
 		}
+		if (!std::isfinite(system->outlet_transition_setback)
+			|| !(system->outlet_transition_setback > Precision::Confusion()))
+		{
+			throw std::invalid_argument(
+				"The collector outlet transition setback must be finite and positive.");
+		}
 		replacement.geometry_spec = *system;
 		replacement.inlet_specs.assign(inlets, inlets + inlet_count);
 		for (size_t index = 0; index < inlet_count; ++index)
@@ -809,7 +816,7 @@ fgcad_status fgcad_document_build_collector_system(
 		auto previous = document->collectors.find(system_id);
 		std::ostringstream assembly_key_stream;
 		assembly_key_stream << std::setprecision(17)
-			<< "abi=9;builder=runner-sew-2;runner-gas=1;collector-sew-4;collector-gas=3;collector-branch-solver-1;transactional-publish=1;occt=8.0.0;"
+			<< "abi=10;builder=runner-sew-2;runner-gas=1;collector-sew-5;collector-gas=4;collector-branch-solver-1;transactional-publish=1;occt=8.0.0;"
 			<< system->outlet_frame.origin.x << ','
 			<< system->outlet_frame.origin.y << ','
 			<< system->outlet_frame.origin.z << ','
@@ -821,13 +828,14 @@ fgcad_status fgcad_document_build_collector_system(
 			<< system->outlet_frame.normal.z << ';'
 			<< system->branch_end_handle_length << ';'
 			<< system->overlap_length << ';'
+			<< system->outlet_transition_setback << ';'
 			<< static_cast<int>(system->outlet_profile.kind) << ':'
 			<< system->outlet_profile.outer_diameter << ':'
 			<< system->outlet_profile.wall_thickness << ':'
 			<< system->outlet_profile.equivalent_radius << ';';
 		std::ostringstream branch_gas_key_stream;
 		branch_gas_key_stream << std::setprecision(17)
-			<< "collector-branch-gas-3;"
+			<< "collector-branch-gas-4;"
 			<< system->outlet_frame.origin.x << ','
 			<< system->outlet_frame.origin.y << ','
 			<< system->outlet_frame.origin.z << ','
@@ -839,6 +847,7 @@ fgcad_status fgcad_document_build_collector_system(
 			<< system->outlet_frame.normal.z << ';'
 			<< system->branch_end_handle_length << ';'
 			<< system->overlap_length << ';'
+			<< system->outlet_transition_setback << ';'
 			<< static_cast<int>(system->outlet_profile.kind) << ':'
 			<< system->outlet_profile.outer_diameter << ':'
 			<< system->outlet_profile.wall_thickness << ':'
@@ -908,7 +917,7 @@ fgcad_status fgcad_document_build_collector_system(
 		}
 		replacement.assembly_key = assembly_key_stream.str();
 		replacement.branch_gas_key = branch_gas_key_stream.str();
-		replacement.gas_key = "collector-gas-3;" + replacement.branch_gas_key
+		replacement.gas_key = "collector-gas-4;" + replacement.branch_gas_key
 			+ complete_gas_key_stream.str();
 		auto publish_staged_runners = [&]()
 		{
@@ -2412,7 +2421,7 @@ fgcad_status fgcad_document_build_collector_system(
 					"The temporarily overlapped collector branches did not form one material and one gas union.");
 			}
 			gp_Pnt outlet_join_origin = outlet_origin.Translated(
-				-gp_Vec(outlet_tangent) * system->overlap_length);
+				-gp_Vec(outlet_tangent) * system->outlet_transition_setback);
 			TopoDS_Face outlet_join_plane = BRepBuilderAPI_MakeFace(
 				gp_Pln(outlet_join_origin, outlet_tangent)).Face();
 			TopoDS_Solid outlet_join_upstream = BRepPrimAPI_MakeHalfSpace(
@@ -2435,12 +2444,17 @@ fgcad_status fgcad_document_build_collector_system(
 				trim.SetFuzzyValue(cell_fuzzy_tolerance);
 				trim.Build();
 				++metrics.cut_count;
-				if (!trim.IsDone() || trim.Shape().IsNull()
-					|| solid_count(trim.Shape()) != 1)
+				if (!trim.IsDone() || trim.Shape().IsNull())
 				{
 					throw std::runtime_error(
 						std::string(description)
 							+ " could not be trimmed at the outlet-profile join plane.");
+				}
+				if (solid_count(trim.Shape()) != 1)
+				{
+					throw std::runtime_error(
+						"The outlet transition setback lies upstream of the connected "
+						"collector merge. Reduce the transition setback.");
 				}
 				return trim.Shape();
 			};
@@ -2450,8 +2464,16 @@ fgcad_status fgcad_document_build_collector_system(
 			TopoDS_Shape trimmed_gas_union = trim_to_join(
 				untrimmed_gas_union,
 				"The collector gas branch union");
-			auto loft_from_cut_outline = [&](const TopoDS_Shape& trimmed_union,
-				const TopoDS_Face& outlet_section,
+			struct collector_cut_outline
+			{
+				TopoDS_Wire wire;
+				TopoDS_Face face;
+				double area{};
+				double equivalent_diameter{};
+				double minimum_radial_diameter{};
+				double maximum_radial_diameter{};
+			};
+			auto extract_cut_outline = [&](const TopoDS_Shape& trimmed_union,
 				const char* description)
 			{
 				struct edge_occurrence
@@ -2504,33 +2526,171 @@ fgcad_status fgcad_document_build_collector_system(
 						}
 					}
 				}
-				BRepBuilderAPI_MakeWire cut_wire_builder;
-				size_t boundary_edge_count = 0;
+				Handle(NCollection_HSequence<TopoDS_Shape>) boundary_edges =
+					new NCollection_HSequence<TopoDS_Shape>();
 				for (const edge_occurrence& occurrence : cut_edges)
 				{
 					if (occurrence.count != 1)
 					{
 						continue;
 					}
-					cut_wire_builder.Add(occurrence.edge);
-					++boundary_edge_count;
+					boundary_edges->Append(occurrence.edge);
 				}
-				TopoDS_Wire outlet_wire = BRepTools::OuterWire(outlet_section);
-				if (cut_face_count == 0
-					|| boundary_edge_count == 0
-					|| !cut_wire_builder.IsDone()
-					|| outlet_wire.IsNull())
+				if (cut_face_count == 0 || boundary_edges->IsEmpty())
 				{
 					throw std::runtime_error(
 						std::string(description)
-							+ " could not extract one usable cut-outline wire.");
+							+ " has no boundary edges on the outlet transition plane.");
+				}
+				Handle(NCollection_HSequence<TopoDS_Shape>) connected_wires =
+					ShapeAnalysis_FreeBounds::ConnectEdgesToWires(
+						boundary_edges,
+						plane_tolerance,
+						false);
+				if (connected_wires.IsNull() || connected_wires->Length() != 1)
+				{
+					int wire_count = connected_wires.IsNull()
+						? 0
+						: connected_wires->Length();
+					throw std::runtime_error(
+						std::string(description) + " produced "
+							+ std::to_string(wire_count)
+							+ " connected cut-outline wires; expected exactly one.");
+				}
+				TopoDS_Wire cut_wire = TopoDS::Wire(connected_wires->Value(1));
+				if (cut_wire.IsNull() || !BRep_Tool::IsClosed(cut_wire))
+				{
+					throw std::runtime_error(
+						std::string(description)
+							+ " did not produce one closed cut-outline wire.");
+				}
+				BRepBuilderAPI_MakeFace cut_face_builder(
+					gp_Pln(outlet_join_origin, outlet_tangent),
+					cut_wire,
+					true);
+				if (!cut_face_builder.IsDone() || cut_face_builder.Face().IsNull())
+				{
+					throw std::runtime_error(
+						std::string(description)
+							+ " could not form a planar cut-outline face.");
+				}
+				TopoDS_Face cut_face = cut_face_builder.Face();
+				GProp_GProps cut_properties;
+				BRepGProp::SurfaceProperties(cut_face, cut_properties);
+				double cut_area = std::abs(cut_properties.Mass());
+				if (!(cut_area > Precision::Confusion()))
+				{
+					throw std::runtime_error(
+						std::string(description)
+							+ " has no positive planar cut-outline area.");
+				}
+				double minimum_radius = std::numeric_limits<double>::infinity();
+				double maximum_radius = 0;
+				gp_Vec outlet_axis(outlet_tangent);
+				for (TopExp_Explorer explorer(cut_wire, TopAbs_EDGE);
+					explorer.More(); explorer.Next())
+				{
+					BRepAdaptor_Curve curve(TopoDS::Edge(explorer.Current()));
+					double first = curve.FirstParameter();
+					double last = curve.LastParameter();
+					if (!std::isfinite(first) || !std::isfinite(last))
+					{
+						continue;
+					}
+					for (int sample = 0; sample <= 32; ++sample)
+					{
+						double parameter = first
+							+ (last - first) * static_cast<double>(sample) / 32.0;
+						gp_Pnt sample_point = curve.Value(parameter);
+						gp_Vec offset(outlet_join_origin, sample_point);
+						double axial = offset.Dot(outlet_axis);
+						double radius = (offset - outlet_axis * axial).Magnitude();
+						minimum_radius = std::min(minimum_radius, radius);
+						maximum_radius = std::max(maximum_radius, radius);
+					}
+				}
+				if (!std::isfinite(minimum_radius))
+				{
+					throw std::runtime_error(
+						std::string(description)
+							+ " could not sample its cut-outline radius.");
+				}
+				return collector_cut_outline{
+					cut_wire,
+					cut_face,
+					cut_area,
+					2.0 * std::sqrt(cut_area / pi),
+					2.0 * minimum_radius,
+					2.0 * maximum_radius
+				};
+			};
+			collector_cut_outline outer_outline = extract_cut_outline(
+				trimmed_outer_union,
+				"The collector outer outlet transition");
+			collector_cut_outline gas_outline = extract_cut_outline(
+				trimmed_gas_union,
+				"The collector gas outlet transition");
+			double wall_area_tolerance = std::max(
+				1.0e-6,
+				outer_outline.area * 1.0e-8);
+			if (!(outer_outline.area > gas_outline.area + wall_area_tolerance))
+			{
+				throw std::runtime_error(
+					"The collector outlet cut outlines do not retain meaningful wall area.");
+			}
+			NCollection_List<TopoDS_Shape> containment_arguments;
+			NCollection_List<TopoDS_Shape> containment_tools;
+			containment_arguments.Append(outer_outline.face);
+			containment_tools.Append(gas_outline.face);
+			BRepAlgoAPI_Common containment;
+			containment.SetArguments(containment_arguments);
+			containment.SetTools(containment_tools);
+			containment.SetNonDestructive(true);
+			containment.SetRunParallel(true);
+			containment.SetFuzzyValue(cell_fuzzy_tolerance);
+			containment.Build();
+			GProp_GProps contained_properties;
+			if (containment.IsDone() && !containment.Shape().IsNull())
+			{
+				BRepGProp::SurfaceProperties(
+					containment.Shape(),
+					contained_properties);
+			}
+			double contained_area = std::abs(contained_properties.Mass());
+			double containment_tolerance = std::max(
+				1.0e-6,
+				gas_outline.area * 1.0e-8);
+			if (!containment.IsDone()
+				|| std::abs(contained_area - gas_outline.area) > containment_tolerance)
+			{
+				throw std::runtime_error(
+					"The collector gas outlet cut outline is not completely enclosed by "
+					"the outer cut outline or their boundaries cross.");
+			}
+			append_native_log(
+				"collector",
+				"Outlet cut outline: equivalentDiameter="
+					+ std::to_string(outer_outline.equivalent_diameter)
+					+ "; minimumRadialDiameter="
+					+ std::to_string(outer_outline.minimum_radial_diameter)
+					+ "; maximumRadialDiameter="
+					+ std::to_string(outer_outline.maximum_radial_diameter) + ".");
+			auto loft_from_cut_outline = [&](const collector_cut_outline& cut_outline,
+				const TopoDS_Face& outlet_section,
+				const char* description)
+			{
+				TopoDS_Wire outlet_wire = BRepTools::OuterWire(outlet_section);
+				if (outlet_wire.IsNull())
+				{
+					throw std::runtime_error(
+						std::string(description) + " has no outlet-profile wire.");
 				}
 				BRepOffsetAPI_ThruSections loft(
 					true,
 					false,
 					std::max(Precision::Confusion() * 10.0, cell_fuzzy_tolerance));
 				loft.CheckCompatibility(true);
-				loft.AddWire(cut_wire_builder.Wire());
+				loft.AddWire(cut_outline.wire);
 				loft.AddWire(outlet_wire);
 				loft.Build();
 				if (!loft.IsDone()
@@ -2546,11 +2706,11 @@ fgcad_status fgcad_document_build_collector_system(
 			};
 			auto outlet_profile_radii = radii(system->outlet_profile);
 			TopoDS_Shape outer_transition = loft_from_cut_outline(
-				trimmed_outer_union,
+				outer_outline,
 				disk(system->outlet_frame, outlet_profile_radii.first),
 				"The collector outer outlet transition");
 			TopoDS_Shape gas_transition = loft_from_cut_outline(
-				trimmed_gas_union,
+				gas_outline,
 				disk(system->outlet_frame, outlet_profile_radii.second),
 				"The collector gas outlet transition");
 			metrics.loft_count += 2;

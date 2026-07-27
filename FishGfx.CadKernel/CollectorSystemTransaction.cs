@@ -92,6 +92,8 @@ public sealed partial class CollectorSystemTransaction
 		{
 			Name = string.IsNullOrWhiteSpace(name) ? $"Collector {stagedCollectors.Count + 1}" : name.Trim(),
 		};
+		candidate.OutletTransitionSetback =
+			CadCollectorSystem.DefaultOutletTransitionSetback(candidate.OutletProfile);
 		CadFrame[] runnerEndFrames = ResolveRunnerEndFrames(ids, authoritativeEvaluations);
 		candidate.OutletFrame = SeedOutletFrame(runnerEndFrames, candidate);
 		for (int index = 0; index < ids.Length; index++)

@@ -475,9 +475,11 @@ internal sealed partial class ManifoldCadApplication
 			active.Id,
 			system =>
 			{
+				bool recalculateBranchPaths = false;
 				if (inletId.HasValue)
 				{
 					CadCollectorInlet inlet = system.Inlets.Single(item => item.Id == inletId.Value);
+					recalculateBranchPaths = true;
 					switch (index)
 					{
 						case 0:
@@ -493,14 +495,21 @@ internal sealed partial class ManifoldCadApplication
 				}
 				else
 				{
-						switch (index)
-						{
-							case 0:
-								system.BranchEndHandleLength = value;
-								break;
+					switch (index)
+					{
+						case 0:
+							system.BranchEndHandleLength = value;
+							recalculateBranchPaths = true;
+							break;
+						case 1:
+							system.OutletTransitionSetback = value;
+							break;
 					}
 				}
-				system.RecalculateBranchPaths();
+				if (recalculateBranchPaths)
+				{
+					system.RecalculateBranchPaths();
+				}
 			},
 			out string error
 		) || !transaction.Commit(out error))

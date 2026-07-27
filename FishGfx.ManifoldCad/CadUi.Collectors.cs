@@ -28,6 +28,7 @@ internal sealed partial class CadUi
 			? new[]
 			{
 				("End handle target mm", system.BranchEndHandleLength),
+				("Outlet transition setback mm", system.OutletTransitionSetback),
 			}
 			: new[]
 			{

@@ -221,8 +221,8 @@ public sealed class CadExactBuildState
 
 public static class CadBuildCompatibility
 {
-	public const uint NativeAbiVersion = 9;
-	public const string BuilderVersion = "runner-sew-2.runner-gas-1.collector-sew-4.collector-gas-3.collector-branch-solver-1.transactional-publish-1";
+	public const uint NativeAbiVersion = 10;
+	public const string BuilderVersion = "runner-sew-2.runner-gas-1.collector-sew-5.collector-gas-4.collector-branch-solver-1.transactional-publish-1";
 	public const string OcctVersion = "8.0.0";
 	public const int SewingPolicyVersion = 3;
 }
@@ -276,6 +276,10 @@ public static class CadGeometryDependencyHash
 		StringBuilder value = Begin("collector");
 		Append(value, system.Id);
 		Append(value, system.OutletFrame);
+		Append(value, system.OutletProfile.OuterDiameterMillimetres);
+		Append(value, system.OutletProfile.WallThicknessMillimetres);
+		Append(value, system.OverlapLength);
+		Append(value, system.OutletTransitionSetback);
 		Append(value, system.BranchEndHandleLength);
 		foreach (CadCollectorInlet inlet in system.Inlets.OrderBy(item => item.Id))
 		{

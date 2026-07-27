@@ -141,6 +141,10 @@ public sealed class CollectorSystemTests
 		Assert.Equal(1, system.GenerationRevision);
 		Assert.Same(system, Assert.Single(project.CollectorSystems));
 		Assert.Equal(2, system.Inlets.Count);
+		Assert.Equal(
+			0.40 * system.OutletProfile.OuterDiameterMillimetres,
+			system.OutletTransitionSetback,
+			9);
 		Assert.Equal(firstGraphId, first.Graph.Id);
 		Assert.Equal(secondGraphId, second.Graph.Id);
 		Assert.All(system.Inlets, inlet => Assert.Equal(0.5, inlet.MergeStation));
@@ -200,7 +204,7 @@ public sealed class CollectorSystemTests
 	}
 
 	[Fact]
-	public void BranchOnlyCollectorDependencyIgnoresLegacyOutletBodyParameters()
+	public void CollectorDependencyIncludesIndependentOutletTransitionInputs()
 	{
 		(ManifoldProject project, CadRunner first, CadRunner second) = CreateTwoRunnerProject();
 		Assert.True(project.TryCreateCollectorSystem(
@@ -214,10 +218,20 @@ public sealed class CollectorSystemTests
 
 		system.OutletStubLength += 10;
 		system.MergeLength += 20;
-		system.OverlapLength += 5;
-		system.OutletProfile = new PipeProfile(76, 2.5);
 
 		Assert.Equal(initialHash, CadGeometryDependencyHash.Collector(project, system));
+
+		system.OverlapLength += 5;
+		Assert.NotEqual(initialHash, CadGeometryDependencyHash.Collector(project, system));
+		system.OverlapLength -= 5;
+
+		system.OutletProfile = new PipeProfile(76, 2.5);
+		Assert.NotEqual(initialHash, CadGeometryDependencyHash.Collector(project, system));
+		system.OutletProfile = new PipeProfile(63.5, 2);
+
+		system.OutletTransitionSetback += 1;
+		Assert.NotEqual(initialHash, CadGeometryDependencyHash.Collector(project, system));
+		system.OutletTransitionSetback -= 1;
 
 		system.BranchEndHandleLength += 1;
 		Assert.NotEqual(initialHash, CadGeometryDependencyHash.Collector(project, system));
@@ -312,7 +326,7 @@ public sealed class CollectorSystemTests
 	}
 
 	[Fact]
-	public void VersionFivePersistenceRetainsFramesBindingsPathsAndStableIds()
+	public void VersionSixPersistenceRetainsFramesBindingsPathsStableIdsAndSetback()
 	{
 		(ManifoldProject project, CadRunner first, CadRunner second) = CreateTwoRunnerProject();
 		Assert.True(project.TryCreateCollectorSystem(
@@ -322,6 +336,7 @@ public sealed class CollectorSystemTests
 			out CadCollectorSystem system,
 			out string error
 		), error);
+		system.OutletTransitionSetback = 31.75;
 		string json = RunnerCollectionJson.Serialize(project);
 		RunnerCollectionLoadResult loaded = RunnerCollectionJson.Deserialize(json);
 
@@ -330,6 +345,7 @@ public sealed class CollectorSystemTests
 		Assert.Equal(system.Id, restored.Id);
 		Assert.Equal(system.GenerationRevision, restored.GenerationRevision);
 		Assert.Equal(system.OutletFrame, restored.OutletFrame);
+		Assert.Equal(31.75, restored.OutletTransitionSetback, 9);
 		Assert.Equal(
 			system.Inlets.Select(inlet => inlet.Id),
 			restored.Inlets.Select(inlet => inlet.Id));
@@ -343,6 +359,77 @@ public sealed class CollectorSystemTests
 				restored.Inlets[index].BranchPath
 			);
 		}
+	}
+
+	[Fact]
+	public void VersionFiveMigrationAssignsOutletTransitionSetbackOnce()
+	{
+		(ManifoldProject project, CadRunner first, CadRunner second) = CreateTwoRunnerProject();
+		Assert.True(project.TryCreateCollectorSystem(
+			new[] { first.Id, second.Id },
+			CollectorLayoutPreset.Row,
+			"Legacy collector",
+			out _,
+			out string createError
+		), createError);
+		JsonObject root = JsonNode.Parse(RunnerCollectionJson.Serialize(project))!.AsObject();
+		root["version"] = 5;
+		JsonObject collector = root["collectorSystems"]![0]!.AsObject();
+		collector["overlapLength"] = 12;
+		collector.Remove("outletTransitionSetback");
+
+		RunnerCollectionLoadResult loaded = RunnerCollectionJson.Deserialize(root.ToJsonString());
+
+		Assert.True(loaded.Success, string.Join(Environment.NewLine, loaded.Errors));
+		CadCollectorSystem restored = Assert.Single(loaded.CollectorSystems);
+		Assert.Equal(25.4, restored.OutletTransitionSetback, 9);
+		restored.OverlapLength = 40;
+		restored.OutletProfile = new PipeProfile(76, 2.5);
+		Assert.Equal(25.4, restored.OutletTransitionSetback, 9);
+
+		collector["overlapLength"] = 40;
+		RunnerCollectionLoadResult largeOverlap = RunnerCollectionJson.Deserialize(
+			root.ToJsonString());
+		Assert.True(largeOverlap.Success, string.Join(
+			Environment.NewLine,
+			largeOverlap.Errors));
+		Assert.Equal(40, Assert.Single(largeOverlap.CollectorSystems)
+			.OutletTransitionSetback, 9);
+	}
+
+	[Fact]
+	public void VersionSixRejectsMissingOrInvalidOutletTransitionSetback()
+	{
+		(ManifoldProject project, CadRunner first, CadRunner second) = CreateTwoRunnerProject();
+		Assert.True(project.TryCreateCollectorSystem(
+			new[] { first.Id, second.Id },
+			CollectorLayoutPreset.Row,
+			null,
+			out _,
+			out string createError
+		), createError);
+		JsonObject root = JsonNode.Parse(RunnerCollectionJson.Serialize(project))!.AsObject();
+		JsonObject collector = root["collectorSystems"]![0]!.AsObject();
+		collector.Remove("outletTransitionSetback");
+		RunnerCollectionLoadResult missing = RunnerCollectionJson.Deserialize(root.ToJsonString());
+		Assert.False(missing.Success);
+		Assert.Contains(missing.Errors, error => error.Contains(
+			"requires an outlet transition setback",
+			StringComparison.OrdinalIgnoreCase));
+
+		collector["outletTransitionSetback"] = 0;
+		RunnerCollectionLoadResult zero = RunnerCollectionJson.Deserialize(root.ToJsonString());
+		Assert.False(zero.Success);
+		Assert.Contains(zero.Errors, error => error.Contains(
+			"finite and positive",
+			StringComparison.OrdinalIgnoreCase));
+
+		collector["outletTransitionSetback"] = -1;
+		RunnerCollectionLoadResult negative = RunnerCollectionJson.Deserialize(root.ToJsonString());
+		Assert.False(negative.Success);
+		Assert.Contains(negative.Errors, error => error.Contains(
+			"finite and positive",
+			StringComparison.OrdinalIgnoreCase));
 	}
 
 	[Fact]
@@ -586,6 +673,69 @@ public sealed class CollectorSystemTests
 		Assert.Contains("revision", revisionError, StringComparison.OrdinalIgnoreCase);
 		Assert.True(revisionTransaction.Commit(out string revisionCommitError), revisionCommitError);
 		Assert.Equal(revision, project.CollectorSystems[0].GenerationRevision);
+	}
+
+	[Fact]
+	public void SetbackUpdatePreservesBranchPathsAndRunnerCacheEligibility()
+	{
+		(ManifoldProject project, CadRunner first, CadRunner second) = CreateTwoRunnerProject();
+		Assert.True(project.TryCreateCollectorSystem(
+			new[] { first.Id, second.Id },
+			CollectorLayoutPreset.Row,
+			null,
+			out CadCollectorSystem system,
+			out string createError
+		), createError);
+		string[] branchPaths = system.Inlets
+			.Select(inlet => System.Text.Json.JsonSerializer.Serialize(inlet.BranchPath))
+			.ToArray();
+		string firstRunnerHash = CadGeometryDependencyHash.Runner(project, first);
+		string secondRunnerHash = CadGeometryDependencyHash.Runner(project, second);
+		string collectorHash = CadGeometryDependencyHash.Collector(project, system);
+		system.ExactBuild.Request(system.GenerationRevision, collectorHash);
+		Assert.True(system.ExactBuild.TryBegin(system.GenerationRevision, collectorHash));
+		Assert.True(system.ExactBuild.TryPublish(system.GenerationRevision, collectorHash));
+		long revision = system.GenerationRevision;
+
+		CollectorSystemTransaction transaction = CollectorSystemTransaction.Begin(project);
+		Assert.True(transaction.TryUpdate(
+			system.Id,
+			candidate => candidate.OutletTransitionSetback += 2,
+			out string updateError), updateError);
+		Assert.True(transaction.Commit(out string commitError), commitError);
+
+		CadCollectorSystem updated = Assert.Single(project.CollectorSystems);
+		Assert.Equal(revision + 1, updated.GenerationRevision);
+		Assert.Equal(CadExactBuildStatus.Stale, updated.ExactBuild.Snapshot.Status);
+		Assert.Equal(branchPaths, updated.Inlets
+			.Select(inlet => System.Text.Json.JsonSerializer.Serialize(inlet.BranchPath))
+			.ToArray());
+		Assert.Equal(firstRunnerHash, CadGeometryDependencyHash.Runner(project, first));
+		Assert.Equal(secondRunnerHash, CadGeometryDependencyHash.Runner(project, second));
+		Assert.NotEqual(collectorHash, CadGeometryDependencyHash.Collector(project, updated));
+	}
+
+	[Theory]
+	[InlineData(double.NaN)]
+	[InlineData(double.PositiveInfinity)]
+	[InlineData(double.NegativeInfinity)]
+	public void SetbackUpdateRejectsNonFiniteValues(double value)
+	{
+		(ManifoldProject project, CadRunner first, CadRunner second) = CreateTwoRunnerProject();
+		Assert.True(project.TryCreateCollectorSystem(
+			new[] { first.Id, second.Id },
+			CollectorLayoutPreset.Row,
+			null,
+			out CadCollectorSystem system,
+			out string createError
+		), createError);
+		CollectorSystemTransaction transaction = CollectorSystemTransaction.Begin(project);
+
+		Assert.False(transaction.TryUpdate(
+			system.Id,
+			candidate => candidate.OutletTransitionSetback = value,
+			out string updateError));
+		Assert.Contains("finite and positive", updateError, StringComparison.OrdinalIgnoreCase);
 	}
 
 	[Fact]

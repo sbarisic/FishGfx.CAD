@@ -82,6 +82,7 @@
 #include <math_DirectPolynomialRoots.hxx>
 #include <NCollection_List.hxx>
 #include <NCollection_Array1.hxx>
+#include <NCollection_HSequence.hxx>
 #include <NCollection_Sequence.hxx>
 #include <PCDM_ReaderStatus.hxx>
 #include <PCDM_StoreStatus.hxx>

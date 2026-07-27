@@ -438,6 +438,7 @@ internal unsafe struct NativeCollectorSystemSpec
 	internal double OutletStubLength;
 	internal double MergeLength;
 	internal double OverlapLength;
+	internal double OutletTransitionSetback;
 	internal double BranchEndHandleLength;
 
 	internal static NativeCollectorSystemSpec FromManaged(CadCollectorSystem system)
@@ -451,6 +452,7 @@ internal unsafe struct NativeCollectorSystemSpec
 			OutletStubLength = system.OutletStubLength,
 			MergeLength = system.MergeLength,
 			OverlapLength = system.OverlapLength,
+			OutletTransitionSetback = system.OutletTransitionSetback,
 			BranchEndHandleLength = system.BranchEndHandleLength,
 		};
 		CopyText(result.SystemId, system.Id.ToString("D"), 39);

@@ -300,7 +300,7 @@ fgcad_status fgcad_document_build_runner(
 		auto section_key = [&](size_t first, size_t last)
 		{
 			std::ostringstream key;
-			key << "abi=9;builder=runner-sew-2.runner-gas-1.collector-sew-4.collector-gas-3.collector-branch-solver-1.transactional-publish-1;occt=8.0.0;"
+			key << "abi=10;builder=runner-sew-2.runner-gas-1.collector-sew-5.collector-gas-4.collector-branch-solver-1.transactional-publish-1;occt=8.0.0;"
 				<< "sewing=2;sourceRevision="
 				<< document->source_geometry_revision << ';'
 				<< std::hexfloat << (last - first) << '|';

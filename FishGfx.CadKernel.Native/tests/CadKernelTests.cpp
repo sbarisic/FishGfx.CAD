@@ -127,7 +127,7 @@ int main()
 		std::cout << "[native-test] " << name << std::endl;
 	};
 	checkpoint("startup");
-	require(fgcad_api_version() == 9, "ABI version mismatch");
+	require(fgcad_api_version() == 10, "ABI version mismatch");
 	fgcad_document* document = nullptr;
 	require(fgcad_document_create(&document) == FGCAD_STATUS_OK, "Document creation failed");
 	require(document != nullptr, "Document handle was null");
@@ -431,6 +431,7 @@ int main()
 	collector.outlet_stub_length = 50;
 	collector.merge_length = 120;
 	collector.overlap_length = 12;
+	collector.outlet_transition_setback = 12;
 	collector.branch_end_handle_length = 30;
 	fgcad_collector_inlet collector_inlets[2]{};
 	for (size_t index = 0; index < 2; ++index)
@@ -623,6 +624,46 @@ int main()
 		zero_overlap_collector.system_id,
 		zero_overlap_collector.generation_revision) == FGCAD_STATUS_OK,
 		"Zero-overlap collector staging did not abort cleanly");
+
+	fgcad_collector_system_spec upstream_setback_collector = collector;
+	std::snprintf(
+		upstream_setback_collector.system_id,
+		sizeof(upstream_setback_collector.system_id),
+		"20000000-0000-0000-0000-000000000098");
+	upstream_setback_collector.outlet_transition_setback = 500;
+	require(fgcad_document_begin_collector_system_build(
+		document,
+		upstream_setback_collector.system_id,
+		upstream_setback_collector.generation_revision) == FGCAD_STATUS_OK,
+		"Upstream-setback collector staging did not begin");
+	require(fgcad_document_build_runner(
+		document,
+		collector_inlets[0].runner_id,
+		"Upstream-setback runner 1",
+		&collector_runner_a,
+		1) == FGCAD_STATUS_OK,
+		"Upstream-setback first member staging failed");
+	require(fgcad_document_build_runner(
+		document,
+		collector_inlets[1].runner_id,
+		"Upstream-setback runner 2",
+		&collector_runner_b,
+		1) == FGCAD_STATUS_OK,
+		"Upstream-setback second member staging failed");
+	require(fgcad_document_build_collector_system(
+		document,
+		&upstream_setback_collector,
+		collector_inlets,
+		2) != FGCAD_STATUS_OK,
+		"A collector setback upstream of the connected merge was accepted");
+	require(std::string(fgcad_last_error()).find(
+		"lies upstream of the connected collector merge") != std::string::npos,
+		"The upstream-setback failure did not report the targeted diagnostic");
+	require(fgcad_document_abort_collector_system_build(
+		document,
+		upstream_setback_collector.system_id,
+		upstream_setback_collector.generation_revision) == FGCAD_STATUS_OK,
+		"Upstream-setback collector staging did not abort cleanly");
 
 	fgcad_runner_profile flange_collector_profile = circular(42.4, 2);
 	fgcad_runner_feature flange_runner_a = straight(
@@ -997,8 +1038,64 @@ int main()
 		reused_members.generation_revision) == FGCAD_STATUS_OK,
 		"Reused collector-system publication did not commit");
 
+	fgcad_collector_system_spec changed_setback = collector;
+	changed_setback.generation_revision = 4;
+	changed_setback.outlet_transition_setback = 13;
+	require(fgcad_document_begin_collector_system_build(
+		document,
+		collector.system_id,
+		changed_setback.generation_revision) == FGCAD_STATUS_OK,
+		"Setback-only collector staging did not begin");
+	require(fgcad_document_build_runner(
+		document,
+		collector_inlets[0].runner_id,
+		"Setback-only runner 1",
+		&collector_runner_a,
+		1) == FGCAD_STATUS_OK,
+		"Setback-only first member staging failed");
+	require(fgcad_document_build_runner(
+		document,
+		collector_inlets[1].runner_id,
+		"Setback-only runner 2",
+		&collector_runner_b,
+		1) == FGCAD_STATUS_OK,
+		"Setback-only second member staging failed");
+	for (const fgcad_collector_inlet& inlet : collector_inlets)
+	{
+		fgcad_build_metrics runner_cache_metrics{};
+		require(fgcad_document_get_build_metrics(
+			document,
+			inlet.runner_id,
+			&runner_cache_metrics) == FGCAD_STATUS_OK,
+			"Setback-only member cache metrics were unavailable");
+		require(
+			(runner_cache_metrics.cache_flags & FGCAD_CACHE_RUNNER_SOLID) != 0,
+			"Changing only the collector setback invalidated a member runner solid");
+	}
+	require(fgcad_document_build_collector_system(
+		document,
+		&changed_setback,
+		collector_inlets,
+		2) == FGCAD_STATUS_OK,
+		"Setback-only collector replacement failed");
+	fgcad_build_metrics setback_metrics{};
+	require(fgcad_document_get_build_metrics(
+		document,
+		changed_setback.system_id,
+		&setback_metrics) == FGCAD_STATUS_OK,
+		"Setback-only collector metrics were unavailable");
+	require(
+		(setback_metrics.cache_flags & FGCAD_CACHE_COLLECTOR_BODY) == 0
+			&& (setback_metrics.cache_flags & FGCAD_CACHE_SYSTEM_ASSEMBLY) == 0,
+		"A changed outlet transition setback incorrectly reused collector geometry");
+	require(fgcad_document_commit_collector_system_build(
+		document,
+		changed_setback.system_id,
+		changed_setback.generation_revision) == FGCAD_STATUS_OK,
+		"Setback-only collector publication did not commit");
+
 	fgcad_collector_system_spec invalid_replacement = collector;
-	invalid_replacement.generation_revision = 4;
+	invalid_replacement.generation_revision = 5;
 	invalid_replacement.branch_end_handle_length = -1;
 	require(fgcad_document_begin_collector_system_build(
 		document,
