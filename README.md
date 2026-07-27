@@ -2,6 +2,16 @@
 
 FishGfx.CAD is a Windows x64/.NET 10 parametric CAD application for designing exhaust runners and collector systems. FishGfx and FishUI provide the viewport and desktop interface, while Open CASCADE owns exact STEP/XCAF geometry, B-rep construction, validation, tessellation, and export.
 
+![FishGfx.CAD editing a cubic Bezier exhaust runner](images/bezier_example.png)
+
+## Examples
+
+| Imported STEP flange | Parametric loft transitions |
+| --- | --- |
+| ![An imported four-port flange with detected mate profiles](images/imported_flange.png) | ![Four runners with editable loft-transition nodes](images/loft_example.png) |
+| **Assembled four-runner manifold** | **Collector and outlet geometry** |
+| ![A completed four-runner exhaust manifold](images/manifold_example.png) | ![The manifold collector and outlet viewed from below](images/holes_example.png) |
+
 ## Repository layout
 
 - `FishGfx.CadKernel` — managed CAD contracts, document worker, persistence, diagnostics, and native ownership.
@@ -62,7 +72,7 @@ dotnet run --project .\FishGfx.ManifoldCad\FishGfx.ManifoldCad.csproj -c Release
 
 `.fgcad` files are versioned ZIP archives containing the project manifest, runner and collector graph data, view state, and an XCAF document with exact geometry and placements. Original STEP paths are metadata; reopening a saved project does not depend on the source STEP files.
 
-Generated `.fgcad` archives, native build trees, local vcpkg content, logs, screenshots, and binaries are intentionally ignored.
+Generated `.fgcad` archives, native build trees, local vcpkg content, logs, transient `screenshots/` captures, and binaries are intentionally ignored. Curated application examples used by this README live in `images/` and are tracked.
 
 ## Licensing
 
