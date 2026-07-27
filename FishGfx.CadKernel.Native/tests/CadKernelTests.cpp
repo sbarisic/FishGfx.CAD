@@ -484,9 +484,10 @@ int main()
 			&& collector_metrics.final_boolean_count == 1
 			&& collector_metrics.gas_fusion_count == 1
 			&& collector_metrics.gas_overlap_count == 2
-			&& collector_metrics.cut_count == 5
-			&& collector_metrics.loft_count == 0,
-		"Collector construction did not use the expected wall, outlet-profile, and gas-domain operations"
+			&& collector_metrics.sweep_count == 4
+			&& collector_metrics.cut_count == 3
+			&& collector_metrics.loft_count == 2,
+		"Collector construction did not use the expected wall, cut-outline loft, and gas-domain operations"
 	);
 	require(
 		collector_metrics.solid_count == 1

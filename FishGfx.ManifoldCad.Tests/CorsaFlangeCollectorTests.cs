@@ -224,7 +224,10 @@ public sealed class CorsaFlangeCollectorTests
 			Assert.Equal(1u, coldCollectorMetrics.Operations.GasFusionCount);
 			Assert.Equal((uint)fixture.Collector.Inlets.Count,
 				coldCollectorMetrics.Operations.GasOverlapCount);
-			Assert.Equal(5u, coldCollectorMetrics.Operations.CutCount);
+			Assert.Equal((uint)(fixture.Collector.Inlets.Count * 2),
+				coldCollectorMetrics.Operations.SweepCount);
+			Assert.Equal(3u, coldCollectorMetrics.Operations.CutCount);
+			Assert.Equal(2u, coldCollectorMetrics.Operations.LoftCount);
 			Assert.Equal(1u, coldCollectorMetrics.Topology.SolidCount);
 			Assert.Equal(1u, coldCollectorMetrics.Topology.ShellCount);
 			Assert.Equal(

@@ -45,6 +45,7 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeSolid.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Sewing.hxx>
 #include <BRepCheck_Analyzer.hxx>
@@ -267,6 +268,7 @@ struct collector_record
 	uint64_t generation_revision{};
 	TopoDS_Shape shape;
 	TopoDS_Shape branch_gas_shape;
+	std::vector<TopoDS_Shape> branch_gas_interface_shapes;
 	TopoDS_Shape gas_shape;
 	std::string branch_gas_key;
 	std::string gas_key;
