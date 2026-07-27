@@ -244,6 +244,8 @@ typedef struct fgcad_build_metrics
 	uint32_t merge_boolean_count;
 	uint32_t interface_boolean_count;
 	uint32_t final_boolean_count;
+	uint32_t gas_fusion_count;
+	uint32_t gas_overlap_count;
 	uint32_t cut_count;
 	uint32_t validation_count;
 	uint32_t classification_count;
@@ -438,6 +440,10 @@ FGCAD_API fgcad_status fgcad_document_load_xcaf(
 	const char* path_utf8
 );
 FGCAD_API fgcad_status fgcad_document_export_step_ap242(
+	fgcad_document* document,
+	const char* path_utf8
+);
+FGCAD_API fgcad_status fgcad_document_export_gas_step_ap242(
 	fgcad_document* document,
 	const char* path_utf8
 );

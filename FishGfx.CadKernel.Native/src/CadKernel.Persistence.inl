@@ -74,6 +74,24 @@ fgcad_status fgcad_document_load_xcaf(fgcad_document* document, const char* path
 			TopoDS_Shape shape = shapes->GetShape(is_reference ? referred : label);
 			gp_Trsf placement = XCAFDoc_ShapeTool::GetLocation(label).Transformation();
 
+			if (name.rfind("FGRUNNERGAS:", 0) == 0)
+			{
+				std::string id = name.substr(12);
+				runner_record& runner = replacement.runners[id];
+				runner.id = id;
+				runner.gas_shape = shape.Moved(TopLoc_Location(placement));
+				return;
+			}
+
+			if (name.rfind("FGCOLLECTORGAS:", 0) == 0)
+			{
+				std::string id = name.substr(15);
+				collector_record& collector = replacement.collectors[id];
+				collector.id = id;
+				collector.gas_shape = shape.Moved(TopLoc_Location(placement));
+				return;
+			}
+
 			if (name == "FGRUNNER" || name.rfind("FGRUNNER:", 0) == 0
 				|| name.rfind("FGRUNNERDEF:", 0) == 0)
 			{
@@ -98,6 +116,11 @@ fgcad_status fgcad_document_load_xcaf(fgcad_document* document, const char* path
 					size_t separator = name.find(':', 9);
 					runner.id = separator == std::string::npos ? name.substr(9) : name.substr(9, separator - 9);
 					runner.name = separator == std::string::npos ? "Runner" : name.substr(separator + 1);
+				}
+				auto existing = replacement.runners.find(runner.id);
+				if (existing != replacement.runners.end())
+				{
+					runner.gas_shape = existing->second.gas_shape;
 				}
 				runner.shape = shape.Moved(TopLoc_Location(placement));
 				replacement.runners[runner.id] = std::move(runner);
@@ -140,6 +163,11 @@ fgcad_status fgcad_document_load_xcaf(fgcad_document* document, const char* path
 						if (comma == std::string::npos) break;
 						begin = comma + 1;
 					}
+				}
+				auto existing = replacement.collectors.find(collector.id);
+				if (existing != replacement.collectors.end())
+				{
+					collector.gas_shape = existing->second.gas_shape;
 				}
 				collector.shape = shape.Moved(TopLoc_Location(placement));
 				replacement.collectors[collector.id] = std::move(collector);
@@ -270,6 +298,40 @@ fgcad_status fgcad_document_export_step_ap242(fgcad_document* document, const ch
 		if (!writer.Perform(xcaf, require_text(path_utf8, "path_utf8").c_str()))
 		{
 			last_error = "STEPCAFControl_Writer failed to export the AP242 assembly.";
+			return FGCAD_STATUS_IO_FAILED;
+		}
+
+		return FGCAD_STATUS_OK;
+	});
+}
+
+fgcad_status fgcad_document_export_gas_step_ap242(
+	fgcad_document* document,
+	const char* path_utf8)
+{
+	return guarded([&]()
+	{
+		if (document == nullptr
+			|| document->runners.empty() && document->collectors.empty())
+		{
+			throw std::invalid_argument(
+				"At least one published gas path is required before gas STEP export.");
+		}
+		if (!document->staged_runner_id.empty()
+			|| !document->staged_collector_id.empty())
+		{
+			throw std::invalid_argument(
+				"Gas STEP export cannot read an uncommitted exact-geometry publication.");
+		}
+
+		Handle(TDocStd_Document) xcaf = make_gas_xcaf_document(
+			document->runners,
+			document->collectors);
+		Interface_Static::SetCVal("write.step.schema", "AP242DIS");
+		STEPCAFControl_Writer writer;
+		if (!writer.Perform(xcaf, require_text(path_utf8, "path_utf8").c_str()))
+		{
+			last_error = "STEPCAFControl_Writer failed to export the gas-only AP242 assembly.";
 			return FGCAD_STATUS_IO_FAILED;
 		}
 

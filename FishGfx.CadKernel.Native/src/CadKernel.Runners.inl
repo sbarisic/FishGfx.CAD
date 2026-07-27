@@ -300,7 +300,7 @@ fgcad_status fgcad_document_build_runner(
 		auto section_key = [&](size_t first, size_t last)
 		{
 			std::ostringstream key;
-			key << "abi=8;builder=runner-sew-2.collector-sew-3.collector-branch-solver-1.transactional-publish-1;occt=8.0.0;"
+			key << "abi=9;builder=runner-sew-2.runner-gas-1.collector-sew-3.collector-gas-1.collector-branch-solver-1.transactional-publish-1;occt=8.0.0;"
 				<< "sewing=2;sourceRevision="
 				<< document->source_geometry_revision << ';'
 				<< std::hexfloat << (last - first) << '|';
@@ -472,6 +472,8 @@ fgcad_status fgcad_document_build_runner(
 			trace("groupedSweep");
 
 			generated_section section;
+			section.outer_shape = outer_pipe.Shape();
+			section.inner_shape = inner_pipe.Shape();
 			section.shape = make_surface_compound(outer_pipe.Shape(), inner_pipe.Shape());
 			section.entry_boundary = {
 				surface_boundary_at(
@@ -667,6 +669,8 @@ fgcad_status fgcad_document_build_runner(
 			}
 			trace("loftSurfaces");
 			generated_section section;
+			section.outer_shape = outer.Shape();
+			section.inner_shape = inner.Shape();
 			section.shape = make_surface_compound(outer.Shape(), inner.Shape());
 			trace("loftCompound");
 			TopoDS_Wire inner_entry = surface_boundary_at(
@@ -711,6 +715,9 @@ fgcad_status fgcad_document_build_runner(
 		replacement.id = require_text(runner_id, "runner_id");
 		replacement.name = require_text(runner_name, "runner_name");
 		replacement.geometry_key = section_key(0, feature_count);
+		replacement.gas_key = "runner-gas-1;" + replacement.geometry_key;
+		replacement.gas_start_frame = features[0].entry_frame;
+		replacement.gas_end_frame = features[feature_count - 1].exit_frame;
 		if (!document->staged_runner_id.empty()
 			&& document->staged_runner_id != replacement.id)
 		{
@@ -762,7 +769,9 @@ fgcad_status fgcad_document_build_runner(
 			previous_cache = &previous_cache_iterator->second;
 		}
 		if (previous_cache != nullptr
-			&& previous_cache->geometry_key == replacement.geometry_key)
+			&& previous_cache->geometry_key == replacement.geometry_key
+			&& previous_cache->gas_key == replacement.gas_key
+			&& !previous_cache->gas_shape.IsNull())
 		{
 			replacement = *previous_cache;
 			replacement.name = require_text(runner_name, "runner_name");
@@ -778,7 +787,9 @@ fgcad_status fgcad_document_build_runner(
 		{
 			if (previous_cache == nullptr
 				|| section_index >= previous_cache->sections.size()
-				|| previous_cache->sections[section_index].key != key)
+				|| previous_cache->sections[section_index].key != key
+				|| previous_cache->sections[section_index].inner_shape.IsNull()
+				|| previous_cache->sections[section_index].outer_shape.IsNull())
 			{
 				return false;
 			}
@@ -1093,6 +1104,151 @@ fgcad_status fgcad_document_build_runner(
 			std::chrono::duration_cast<std::chrono::microseconds>(
 				std::chrono::steady_clock::now() - validation_start).count());
 		++metrics.validation_count;
+
+		auto gas_start_builder = BRepBuilderAPI_MakeFace(
+			replacement.start_boundary.inner,
+			true);
+		auto gas_end_builder = BRepBuilderAPI_MakeFace(
+			replacement.end_boundary.inner,
+			true);
+		if (!gas_start_builder.IsDone() || !gas_end_builder.IsDone())
+		{
+			throw std::runtime_error(
+				"The runner gas-domain port caps could not be constructed.");
+		}
+		TopoDS_Face gas_start_cap = gas_start_builder.Face();
+		TopoDS_Face gas_end_cap = gas_end_builder.Face();
+		gas_start_cap.Reverse();
+		auto face_area = [](const TopoDS_Face& face)
+		{
+			GProp_GProps properties;
+			BRepGProp::SurfaceProperties(face, properties);
+			return std::abs(properties.Mass());
+		};
+		double expected_start_area = face_area(gas_start_cap);
+		double expected_end_area = face_area(gas_end_cap);
+		if (!(expected_start_area > Precision::Confusion())
+			|| !(expected_end_area > Precision::Confusion()))
+		{
+			throw std::runtime_error(
+				"The runner gas-domain port profile has no positive area.");
+		}
+
+		auto gas_sewing_start = std::chrono::steady_clock::now();
+		BRepBuilderAPI_Sewing gas_sewing(
+			selected_tolerance,
+			true,
+			true,
+			false,
+			false);
+		for (const generated_section& section : replacement.sections)
+		{
+			if (section.inner_shape.IsNull())
+			{
+				throw std::runtime_error(
+					"A runner section has no retained inner gas surface.");
+			}
+			gas_sewing.Add(section.inner_shape);
+		}
+		gas_sewing.Add(gas_start_cap);
+		gas_sewing.Add(gas_end_cap);
+		gas_sewing.Perform();
+		metrics.sewing_microseconds += static_cast<uint64_t>(
+			std::chrono::duration_cast<std::chrono::microseconds>(
+				std::chrono::steady_clock::now() - gas_sewing_start).count());
+		++metrics.sew_count;
+		if (gas_sewing.NbFreeEdges() != 0 || gas_sewing.NbMultipleEdges() != 0)
+		{
+			throw std::runtime_error(
+				"Runner gas-domain sewing did not produce a manifold shell: freeEdges="
+					+ std::to_string(gas_sewing.NbFreeEdges())
+					+ "; multipleEdges="
+					+ std::to_string(gas_sewing.NbMultipleEdges()) + ".");
+		}
+		TopoDS_Shell gas_shell;
+		size_t gas_shell_count = 0;
+		TopoDS_Shape sewed_gas = gas_sewing.SewedShape();
+		if (sewed_gas.ShapeType() == TopAbs_SHELL)
+		{
+			gas_shell = TopoDS::Shell(sewed_gas);
+			gas_shell_count = 1;
+		}
+		else
+		{
+			for (TopExp_Explorer explorer(sewed_gas, TopAbs_SHELL);
+				explorer.More(); explorer.Next())
+			{
+				gas_shell = TopoDS::Shell(explorer.Current());
+				++gas_shell_count;
+			}
+		}
+		if (gas_shell_count != 1 || gas_shell.IsNull()
+			|| !BRep_Tool::IsClosed(gas_shell))
+		{
+			throw std::runtime_error(
+				"Runner gas-domain sewing must produce exactly one closed shell; shells="
+					+ std::to_string(gas_shell_count) + ".");
+		}
+		BRepBuilderAPI_MakeSolid gas_solid_builder(gas_shell);
+		if (!gas_solid_builder.IsDone())
+		{
+			throw std::runtime_error(
+				"The runner gas-domain shell could not be converted into a solid.");
+		}
+		TopoDS_Solid gas_solid = gas_solid_builder.Solid();
+		if (!BRepLib::OrientClosedSolid(gas_solid))
+		{
+			throw std::runtime_error(
+				"The runner gas-domain solid could not be consistently oriented.");
+		}
+		BRepClass3d_SolidClassifier gas_infinite_classifier(gas_solid);
+		gas_infinite_classifier.PerformInfinitePoint(selected_tolerance);
+		++metrics.classification_count;
+		if (gas_infinite_classifier.State() == TopAbs_IN)
+		{
+			gas_solid.Reverse();
+			gas_infinite_classifier.Load(gas_solid);
+			gas_infinite_classifier.PerformInfinitePoint(selected_tolerance);
+			++metrics.classification_count;
+		}
+		GProp_GProps gas_properties;
+		BRepGProp::VolumeProperties(gas_solid, gas_properties);
+		if (gas_infinite_classifier.State() != TopAbs_OUT
+			|| !(std::abs(gas_properties.Mass()) > Precision::Confusion())
+			|| !BRepCheck_Analyzer(gas_solid, true, true).IsValid())
+		{
+			throw std::runtime_error(
+				"The runner gas domain is not one valid, positively oriented solid.");
+		}
+		auto mapped_gas_cap = [&](const TopoDS_Face& cap)
+		{
+			if (!gas_sewing.IsModifiedSubShape(cap))
+			{
+				return cap;
+			}
+			TopoDS_Shape modified = gas_sewing.ModifiedSubShape(cap);
+			return modified.ShapeType() == TopAbs_FACE
+				? TopoDS::Face(modified)
+				: cap;
+		};
+		replacement.gas_start_cap = mapped_gas_cap(gas_start_cap);
+		replacement.gas_end_cap = mapped_gas_cap(gas_end_cap);
+		auto area_matches = [&](const TopoDS_Face& cap, double expected)
+		{
+			double tolerance = std::max(
+				Precision::Confusion(),
+				expected * 1.0e-7);
+			return std::abs(face_area(cap) - expected) <= tolerance;
+		};
+		if (!area_matches(replacement.gas_start_cap, expected_start_area)
+			|| !area_matches(replacement.gas_end_cap, expected_end_area))
+		{
+			throw std::runtime_error(
+				"A runner gas-domain opening no longer matches its profile area.");
+		}
+		replacement.gas_shape = gas_solid;
+		++metrics.validation_count;
+		trace("runnerGasDomain");
 
 		auto mapped_face = [&](const TopoDS_Face& face)
 		{

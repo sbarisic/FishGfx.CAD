@@ -232,6 +232,8 @@ struct runner_section_record
 {
 	std::string key;
 	TopoDS_Shape shape;
+	TopoDS_Shape outer_shape;
+	TopoDS_Shape inner_shape;
 	runner_boundary_record entry_boundary;
 	runner_boundary_record exit_boundary;
 	std::vector<runner_source> sources;
@@ -244,6 +246,12 @@ struct runner_record
 	std::string name;
 	std::string geometry_key;
 	TopoDS_Shape shape;
+	TopoDS_Shape gas_shape;
+	TopoDS_Face gas_start_cap;
+	TopoDS_Face gas_end_cap;
+	fgcad_frame gas_start_frame{};
+	fgcad_frame gas_end_frame{};
+	std::string gas_key;
 	runner_boundary_record start_boundary;
 	runner_boundary_record end_boundary;
 	TopoDS_Face start_cap;
@@ -258,6 +266,12 @@ struct collector_record
 	std::string name;
 	uint64_t generation_revision{};
 	TopoDS_Shape shape;
+	TopoDS_Shape branch_gas_shape;
+	TopoDS_Shape gas_shape;
+	std::string branch_gas_key;
+	std::string gas_key;
+	std::vector<TopoDS_Face> gas_outlet_faces;
+	std::vector<TopoDS_Face> gas_entrance_faces;
 	TopoDS_Shape wall_shape;
 	std::vector<TopoDS_Shape> wall_component_shapes;
 	std::vector<TopoDS_Shape> coupler_shapes;
@@ -666,6 +680,14 @@ Handle(TDocStd_Document) make_xcaf_document(
 	for (const auto& entry : runners)
 	{
 		const runner_record& runner = entry.second;
+		if (include_hidden_member_definitions && !runner.gas_shape.IsNull())
+		{
+			TDF_Label gas_definition = shapes->AddShape(runner.gas_shape, false);
+			TDataStd_Name::Set(
+				gas_definition,
+				extended("FGRUNNERGAS:" + runner.id)
+			);
+		}
 		if (std::find(fused_runner_ids.begin(), fused_runner_ids.end(), runner.id)
 			!= fused_runner_ids.end())
 		{
@@ -688,6 +710,14 @@ Handle(TDocStd_Document) make_xcaf_document(
 	for (const auto& entry : collectors)
 	{
 		const collector_record& collector = entry.second;
+		if (include_hidden_member_definitions && !collector.gas_shape.IsNull())
+		{
+			TDF_Label gas_definition = shapes->AddShape(collector.gas_shape, false);
+			TDataStd_Name::Set(
+				gas_definition,
+				extended("FGCOLLECTORGAS:" + collector.id)
+			);
+		}
 		if (collector.shape.IsNull()) continue;
 		TDF_Label definition = shapes->AddShape(collector.shape, false);
 		TDF_Label label = shapes->AddComponent(assembly, definition, TopLoc_Location());
@@ -704,6 +734,92 @@ Handle(TDocStd_Document) make_xcaf_document(
 
 	shapes->UpdateAssemblies();
 
+	return result;
+}
+
+Handle(TDocStd_Document) make_gas_xcaf_document(
+	const std::unordered_map<std::string, runner_record>& runners,
+	const std::unordered_map<std::string, collector_record>& collectors)
+{
+	Handle(TDocStd_Document) result;
+	Handle(XCAFApp_Application) application = XCAFApp_Application::GetApplication();
+	BinXCAFDrivers::DefineFormat(application);
+	application->NewDocument("BinXCAF", result);
+	Handle(XCAFDoc_ShapeTool) shapes = XCAFDoc_DocumentTool::ShapeTool(result->Main());
+
+	BRep_Builder builder;
+	TopoDS_Compound compound;
+	builder.MakeCompound(compound);
+	TDF_Label assembly = shapes->AddShape(compound, true);
+	TDataStd_Name::Set(assembly, extended("FGGASASSEMBLY:V1"));
+
+	std::vector<std::string> collector_ids;
+	collector_ids.reserve(collectors.size());
+	std::vector<std::string> member_runner_ids;
+	for (const auto& entry : collectors)
+	{
+		collector_ids.push_back(entry.first);
+		member_runner_ids.insert(
+			member_runner_ids.end(),
+			entry.second.runner_ids.begin(),
+			entry.second.runner_ids.end());
+	}
+	std::sort(collector_ids.begin(), collector_ids.end());
+	std::sort(member_runner_ids.begin(), member_runner_ids.end());
+	member_runner_ids.erase(
+		std::unique(member_runner_ids.begin(), member_runner_ids.end()),
+		member_runner_ids.end());
+
+	for (const std::string& id : collector_ids)
+	{
+		const collector_record& collector = collectors.at(id);
+		if (collector.gas_shape.IsNull())
+		{
+			throw std::invalid_argument(
+				"Collector '" + collector.name + "' has no published gas domain.");
+		}
+		TDF_Label definition = shapes->AddShape(collector.gas_shape, false);
+		TDF_Label component = shapes->AddComponent(
+			assembly,
+			definition,
+			TopLoc_Location());
+		TDataStd_Name::Set(component, extended(
+			"FGGASPATH:V1:COLLECTOR:" + collector.id + ":"
+				+ encode_label_text(collector.name)));
+	}
+
+	std::vector<std::string> runner_ids;
+	runner_ids.reserve(runners.size());
+	for (const auto& entry : runners)
+	{
+		if (!std::binary_search(
+				member_runner_ids.begin(),
+				member_runner_ids.end(),
+				entry.first))
+		{
+			runner_ids.push_back(entry.first);
+		}
+	}
+	std::sort(runner_ids.begin(), runner_ids.end());
+	for (const std::string& id : runner_ids)
+	{
+		const runner_record& runner = runners.at(id);
+		if (runner.gas_shape.IsNull())
+		{
+			throw std::invalid_argument(
+				"Runner '" + runner.name + "' has no published gas domain.");
+		}
+		TDF_Label definition = shapes->AddShape(runner.gas_shape, false);
+		TDF_Label component = shapes->AddComponent(
+			assembly,
+			definition,
+			TopLoc_Location());
+		TDataStd_Name::Set(component, extended(
+			"FGGASPATH:V1:RUNNER:" + runner.id + ":"
+				+ encode_label_text(runner.name)));
+	}
+
+	shapes->UpdateAssemblies();
 	return result;
 }
 

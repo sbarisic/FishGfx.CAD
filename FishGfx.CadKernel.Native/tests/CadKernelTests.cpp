@@ -1,9 +1,12 @@
 #include "FishGfxCadKernel.h"
 
 #include <cmath>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <unordered_set>
@@ -124,7 +127,7 @@ int main()
 		std::cout << "[native-test] " << name << std::endl;
 	};
 	checkpoint("startup");
-	require(fgcad_api_version() == 8, "ABI version mismatch");
+	require(fgcad_api_version() == 9, "ABI version mismatch");
 	fgcad_document* document = nullptr;
 	require(fgcad_document_create(&document) == FGCAD_STATUS_OK, "Document creation failed");
 	require(document != nullptr, "Document handle was null");
@@ -476,12 +479,14 @@ int main()
 		"Collector operation metrics were unavailable"
 	);
 	require(
-		collector_metrics.merge_boolean_count == 2
+		collector_metrics.merge_boolean_count == 4
 			&& collector_metrics.interface_boolean_count == 0
 			&& collector_metrics.final_boolean_count == 1
-			&& collector_metrics.cut_count == 3
+			&& collector_metrics.gas_fusion_count == 1
+			&& collector_metrics.gas_overlap_count == 2
+			&& collector_metrics.cut_count == 5
 			&& collector_metrics.loft_count == 0,
-		"Collector construction did not use exactly one outer fuse, one gas fuse, two outlet trims, and one hollowing cut"
+		"Collector construction did not use the expected wall, outlet-profile, and gas-domain operations"
 	);
 	require(
 		collector_metrics.solid_count == 1
@@ -580,6 +585,43 @@ int main()
 		collector.system_id,
 		collector.generation_revision) == FGCAD_STATUS_OK,
 		"Initial collector-system publication did not commit");
+
+	fgcad_collector_system_spec zero_overlap_collector = collector;
+	std::snprintf(
+		zero_overlap_collector.system_id,
+		sizeof(zero_overlap_collector.system_id),
+		"20000000-0000-0000-0000-000000000099");
+	zero_overlap_collector.overlap_length = 0;
+	require(fgcad_document_begin_collector_system_build(
+		document,
+		zero_overlap_collector.system_id,
+		zero_overlap_collector.generation_revision) == FGCAD_STATUS_OK,
+		"Zero-overlap collector staging did not begin");
+	require(fgcad_document_build_runner(
+		document,
+		collector_inlets[0].runner_id,
+		"Zero-overlap runner 1",
+		&collector_runner_a,
+		1) == FGCAD_STATUS_OK,
+		"Zero-overlap first member staging failed");
+	require(fgcad_document_build_runner(
+		document,
+		collector_inlets[1].runner_id,
+		"Zero-overlap runner 2",
+		&collector_runner_b,
+		1) == FGCAD_STATUS_OK,
+		"Zero-overlap second member staging failed");
+	require(fgcad_document_build_collector_system(
+		document,
+		&zero_overlap_collector,
+		collector_inlets,
+		2) == FGCAD_STATUS_INVALID_ARGUMENT,
+		"A collector whose gas interfaces only touch at their caps was accepted");
+	require(fgcad_document_abort_collector_system_build(
+		document,
+		zero_overlap_collector.system_id,
+		zero_overlap_collector.generation_revision) == FGCAD_STATUS_OK,
+		"Zero-overlap collector staging did not abort cleanly");
 
 	fgcad_runner_profile flange_collector_profile = circular(42.4, 2);
 	fgcad_runner_feature flange_runner_a = straight(
@@ -1047,6 +1089,7 @@ int main()
 
 	std::filesystem::path binary = temporary(".xbf");
 	std::filesystem::path step = temporary(".step");
+	std::filesystem::path gas_step = temporary("-gas.step");
 	require(
 		fgcad_document_save_xcaf(document, binary.string().c_str()) == FGCAD_STATUS_OK,
 		"XCAF save failed"
@@ -1055,8 +1098,50 @@ int main()
 		fgcad_document_export_step_ap242(document, step.string().c_str()) == FGCAD_STATUS_OK,
 		"AP242 export failed"
 	);
+	fgcad_build_metrics gas_export_metrics_before{};
+	require(fgcad_document_get_build_metrics(
+		document,
+		"runner-a",
+		&gas_export_metrics_before) == FGCAD_STATUS_OK,
+		"Pre-export runner metrics were unavailable");
+	require(
+		fgcad_document_export_gas_step_ap242(document, gas_step.string().c_str())
+			== FGCAD_STATUS_OK,
+		"Gas-only AP242 export failed"
+	);
+	fgcad_build_metrics gas_export_metrics_after{};
+	require(fgcad_document_get_build_metrics(
+		document,
+		"runner-a",
+		&gas_export_metrics_after) == FGCAD_STATUS_OK,
+		"Post-export runner metrics were unavailable");
+	require(std::memcmp(
+		&gas_export_metrics_before,
+		&gas_export_metrics_after,
+		sizeof(fgcad_build_metrics)) == 0,
+		"Gas export unexpectedly changed exact-build metrics");
 	require(std::filesystem::file_size(binary) > 0, "XCAF file was empty");
 	require(std::filesystem::file_size(step) > 0, "STEP file was empty");
+	require(std::filesystem::file_size(gas_step) > 0, "Gas STEP file was empty");
+	{
+		std::ifstream complete_stream(step);
+		std::string complete_text(
+			(std::istreambuf_iterator<char>(complete_stream)),
+			std::istreambuf_iterator<char>());
+		require(complete_text.find("FGRUNNERGAS:") == std::string::npos
+			&& complete_text.find("FGCOLLECTORGAS:") == std::string::npos
+			&& complete_text.find("FGGASPATH:") == std::string::npos,
+			"Complete STEP unexpectedly exposed hidden gas definitions");
+
+		std::ifstream gas_stream(gas_step);
+		std::string gas_text(
+			(std::istreambuf_iterator<char>(gas_stream)),
+			std::istreambuf_iterator<char>());
+		require(gas_text.find("FGGASPATH:V1:RUNNER:") != std::string::npos,
+			"Gas STEP did not retain stable runner path names");
+		require(gas_text.find("FGPART:") == std::string::npos,
+			"Gas STEP unexpectedly contained imported-part labels");
+	}
 
 	fgcad_document* reopened = nullptr;
 	require(fgcad_document_create(&reopened) == FGCAD_STATUS_OK, "Reopened document creation failed");
@@ -1064,6 +1149,15 @@ int main()
 		fgcad_document_load_xcaf(reopened, binary.string().c_str()) == FGCAD_STATUS_OK,
 		"XCAF reopen failed"
 	);
+	std::filesystem::path reopened_gas_step = temporary("-reopened-gas.step");
+	require(
+		fgcad_document_export_gas_step_ap242(
+			reopened,
+			reopened_gas_step.string().c_str()) == FGCAD_STATUS_OK,
+		"Reopened XCAF did not restore hidden gas shapes"
+	);
+	require(std::filesystem::file_size(reopened_gas_step) > 0,
+		"Reopened gas STEP file was empty");
 	require(
 		fgcad_document_tessellate_runner(reopened, "runner-a", 0.25, 0.2, &tessellation) == FGCAD_STATUS_OK,
 		"Reopened exact runner tessellation failed"
@@ -1239,6 +1333,8 @@ int main()
 	fgcad_document_destroy(document);
 	std::filesystem::remove(binary);
 	std::filesystem::remove(step);
+	std::filesystem::remove(gas_step);
+	std::filesystem::remove(reopened_gas_step);
 	std::filesystem::remove(selected_binary);
 	std::cout << "FishGfx CAD native integration tests passed\n";
 	return EXIT_SUCCESS;

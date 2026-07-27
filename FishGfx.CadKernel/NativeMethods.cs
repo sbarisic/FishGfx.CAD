@@ -144,6 +144,8 @@ internal readonly record struct NativeBuildMetrics(
 	uint MergeBooleanCount,
 	uint InterfaceBooleanCount,
 	uint FinalBooleanCount,
+	uint GasFusionCount,
+	uint GasOverlapCount,
 	uint CutCount,
 	uint ValidationCount,
 	uint ClassificationCount,
@@ -183,6 +185,8 @@ internal readonly record struct NativeBuildMetrics(
 				MergeBooleanCount,
 				InterfaceBooleanCount,
 				FinalBooleanCount,
+				GasFusionCount,
+				GasOverlapCount,
 				CutCount,
 				ValidationCount,
 				ClassificationCount
@@ -781,6 +785,9 @@ internal static partial class NativeMethods
 
 	[LibraryImport(Library, EntryPoint = "fgcad_document_export_step_ap242", StringMarshalling = StringMarshalling.Utf8)]
 	internal static partial NativeStatus DocumentExportStep(CadDocumentSafeHandle document, string path);
+
+	[LibraryImport(Library, EntryPoint = "fgcad_document_export_gas_step_ap242", StringMarshalling = StringMarshalling.Utf8)]
+	internal static partial NativeStatus DocumentExportGasStep(CadDocumentSafeHandle document, string path);
 
 	internal static string LastError()
 	{

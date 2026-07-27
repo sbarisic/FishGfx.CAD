@@ -26,6 +26,8 @@ public readonly record struct CadBuildOperationMetrics(
 	uint MergeBooleanCount,
 	uint InterfaceBooleanCount,
 	uint FinalBooleanCount,
+	uint GasFusionCount,
+	uint GasOverlapCount,
 	uint CutCount,
 	uint ValidationCount,
 	uint ClassificationCount

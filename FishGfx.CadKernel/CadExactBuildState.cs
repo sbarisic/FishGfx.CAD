@@ -221,8 +221,8 @@ public sealed class CadExactBuildState
 
 public static class CadBuildCompatibility
 {
-	public const uint NativeAbiVersion = 8;
-	public const string BuilderVersion = "runner-sew-2.collector-sew-3.collector-branch-solver-1.transactional-publish-1";
+	public const uint NativeAbiVersion = 9;
+	public const string BuilderVersion = "runner-sew-2.runner-gas-1.collector-sew-3.collector-gas-1.collector-branch-solver-1.transactional-publish-1";
 	public const string OcctVersion = "8.0.0";
 	public const int SewingPolicyVersion = 3;
 }

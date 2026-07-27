@@ -49,21 +49,22 @@ internal sealed partial class CadUi : IDisposable
 			Variant = PanelVariant.Dark,
 		};
 		CreateToolbarButton("Import STEP", 10, () => OpenFile("*.step", FilePickerMode.Open, ImportRequested));
-		CreateToolbarButton("Replace", 128, () => OpenFile("*.step", FilePickerMode.Open, ReplaceRequested));
-		CreateToolbarButton("Open Project", 226, () => OpenFile("*.fgcad", FilePickerMode.Open, OpenProjectRequested));
-		CreateToolbarButton("Save Project", 354, () => OpenFile("*.fgcad", FilePickerMode.Save, SaveProjectRequested));
-		CreateToolbarButton("Export STEP", 482, () => OpenFile("*.step", FilePickerMode.Save, ExportRequested));
-		CreateToolbarButton("Fit", 600, () => FitRequested?.Invoke());
-		CreateToolbarButton("Ortho", 666, () => OrthographicRequested?.Invoke());
-		CreateToolbarButton("Top", 742, () => ViewRequested?.Invoke(CadStandardView.Top));
-		CreateToolbarButton("Front", 808, () => ViewRequested?.Invoke(CadStandardView.Front));
-		CreateToolbarButton("Right", 884, () => ViewRequested?.Invoke(CadStandardView.Right));
-		CreateToolbarButton("Gizmo", 962, () => GizmoModeRequested?.Invoke());
-		CreateToolbarButton("Pick Ray", 1038, () => PickingRayDebugRequested?.Invoke());
-		CreateToolbarButton("Add Node", 1142, () => AddNodeRequested?.Invoke());
-		CreateToolbarButton("Row", 1240, () => CollectorPresetRequested?.Invoke(CollectorLayoutPreset.Row));
-		CreateToolbarButton("Circular", 1300, () => CollectorPresetRequested?.Invoke(CollectorLayoutPreset.Radial));
-		CreateToolbarButton("Staggered", 1400, () => CollectorPresetRequested?.Invoke(CollectorLayoutPreset.Staggered));
+		CreateToolbarButton("Replace", 130, () => OpenFile("*.step", FilePickerMode.Open, ReplaceRequested));
+		CreateToolbarButton("Open Project", 218, () => OpenFile("*.fgcad", FilePickerMode.Open, OpenProjectRequested));
+		CreateToolbarButton("Save Project", 346, () => OpenFile("*.fgcad", FilePickerMode.Save, SaveProjectRequested));
+		CreateToolbarButton("Export STEP", 474, () => OpenFile("*.step", FilePickerMode.Save, ExportRequested));
+		CreateToolbarButton("Export Gas", 594, () => OpenFile("*.step", FilePickerMode.Save, ExportGasRequested));
+		CreateToolbarButton("Fit", 706, () => FitRequested?.Invoke());
+		CreateToolbarButton("Ortho", 762, () => OrthographicRequested?.Invoke());
+		CreateToolbarButton("Top", 834, () => ViewRequested?.Invoke(CadStandardView.Top));
+		CreateToolbarButton("Front", 890, () => ViewRequested?.Invoke(CadStandardView.Front));
+		CreateToolbarButton("Right", 962, () => ViewRequested?.Invoke(CadStandardView.Right));
+		CreateToolbarButton("Gizmo", 1034, () => GizmoModeRequested?.Invoke());
+		CreateToolbarButton("Pick Ray", 1106, () => PickingRayDebugRequested?.Invoke());
+		CreateToolbarButton("Add Node", 1202, () => AddNodeRequested?.Invoke());
+		CreateToolbarButton("Row", 1298, () => CollectorPresetRequested?.Invoke(CollectorLayoutPreset.Row));
+		CreateToolbarButton("Circular", 1354, () => CollectorPresetRequested?.Invoke(CollectorLayoutPreset.Radial));
+		CreateToolbarButton("Staggered", 1450, () => CollectorPresetRequested?.Invoke(CollectorLayoutPreset.Staggered));
 		ui.AddControl(toolbar);
 
 		modelPanel = new Panel
@@ -281,6 +282,8 @@ internal sealed partial class CadUi : IDisposable
 	internal event Action<string> SaveDraftRequested;
 
 	internal event Action<string> ExportRequested;
+
+	internal event Action<string> ExportGasRequested;
 
 	internal event Action RebuildExactRequested;
 

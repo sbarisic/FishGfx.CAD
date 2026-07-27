@@ -227,6 +227,22 @@ internal sealed partial class ManifoldCadApplication
 		});
 	}
 
+	private void ExportGasStep(string path)
+	{
+		TryOperation(() =>
+		{
+			EnsureExactSnapshotCurrent();
+			if (!CanExportProject(project, evaluations, runnerBuildErrors))
+			{
+				throw new InvalidOperationException(
+					"Gas export is disabled until every runner and collector has current exact geometry."
+				);
+			}
+			document.ExportGasStepAsync(path).GetAwaiter().GetResult();
+			ui.SetStatus($"Exported gas-volume AP242 assembly to {Path.GetFileName(path)}.");
+		});
+	}
+
 	internal static bool CanExportRunners(
 		IReadOnlyList<CadRunner> runners,
 		IReadOnlyDictionary<Guid, RunnerEvaluationResult> runnerEvaluations,

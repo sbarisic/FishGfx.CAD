@@ -718,6 +718,17 @@ public sealed class CadDocument : IAsyncDisposable, IDisposable
 		}, cancellationToken);
 	}
 
+	public Task ExportGasStepAsync(string path, CancellationToken cancellationToken = default)
+	{
+		return InvokeAsync(() =>
+		{
+			Check(
+				NativeMethods.DocumentExportGasStep(handle, Path.GetFullPath(path)),
+				"Export gas STEP AP242");
+			return true;
+		}, cancellationToken);
+	}
+
 	public void Dispose()
 	{
 		if (disposed)

@@ -62,6 +62,8 @@ The application imports exact STEP parts, creates named mates from supported pro
 
 Geometry edits update lightweight previews and mark exact geometry stale. Use **Rebuild Exact** before STEP export. **Save Project** writes a current `.fgcad` archive; **Save Draft** preserves editable graph state with the previous exact result marked stale.
 
+**Export Gas** writes an AP242 assembly containing only the published closed gas volumes. Each collector and its member runners is exported as one named flow-path solid, while standalone runners remain separate paths; imported parts and metal wall geometry are excluded.
+
 Automated graphical acceptance can be run with:
 
 ```powershell

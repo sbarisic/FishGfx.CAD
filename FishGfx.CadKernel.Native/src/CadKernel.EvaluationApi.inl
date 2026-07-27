@@ -2,7 +2,7 @@
 
 uint32_t fgcad_api_version(void)
 {
-	return 8;
+	return 9;
 }
 
 const char* fgcad_last_error(void)

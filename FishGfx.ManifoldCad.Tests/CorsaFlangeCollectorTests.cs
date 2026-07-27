@@ -218,14 +218,17 @@ public sealed class CorsaFlangeCollectorTests
 				fixture.Runners.Select(async runner => (await fixture.Document
 					.GetBuildMetricsAsync(runner.Id, cancellationToken)).Value)
 			);
-			Assert.Equal(2u, coldCollectorMetrics.Operations.MergeBooleanCount);
+			Assert.Equal(4u, coldCollectorMetrics.Operations.MergeBooleanCount);
 			Assert.Equal(0u, coldCollectorMetrics.Operations.InterfaceBooleanCount);
 			Assert.Equal(1u, coldCollectorMetrics.Operations.FinalBooleanCount);
-			Assert.Equal(3u, coldCollectorMetrics.Operations.CutCount);
+			Assert.Equal(1u, coldCollectorMetrics.Operations.GasFusionCount);
+			Assert.Equal((uint)fixture.Collector.Inlets.Count,
+				coldCollectorMetrics.Operations.GasOverlapCount);
+			Assert.Equal(5u, coldCollectorMetrics.Operations.CutCount);
 			Assert.Equal(1u, coldCollectorMetrics.Topology.SolidCount);
 			Assert.Equal(1u, coldCollectorMetrics.Topology.ShellCount);
 			Assert.Equal(
-				(uint)(fixture.Collector.Inlets.Count + 1),
+				(uint)(fixture.Collector.Inlets.Count + 2),
 				coldCollectorMetrics.Operations.ClassificationCount
 			);
 			Assert.All(coldRunnerMetrics, metrics =>
@@ -467,6 +470,7 @@ public sealed class CorsaFlangeCollectorTests
 			string archivePath = Path.Combine(directory, "corsa.fgcad");
 			string reopenedXcafPath = Path.Combine(directory, "reopened.xbf");
 			string stepPath = Path.Combine(directory, "corsa-ap242.step");
+			string gasStepPath = Path.Combine(directory, "corsa-gas-ap242.step");
 			await fixture.Document.SaveXcafAsync(xcafPath, cancellationToken);
 			CadProjectArchive.Save(
 				archivePath,
@@ -527,14 +531,31 @@ public sealed class CorsaFlangeCollectorTests
 					new Dictionary<Guid, string>()
 				));
 				await reopened.ExportStepAsync(stepPath, cancellationToken);
+				await reopened.ExportGasStepAsync(gasStepPath, cancellationToken);
 			}
 
 			Assert.True(new FileInfo(stepPath).Length > 0);
+			Assert.True(new FileInfo(gasStepPath).Length > 0);
+			string gasStepText = await File.ReadAllTextAsync(
+				gasStepPath,
+				cancellationToken);
+			Assert.Contains("FGGASPATH:V1:COLLECTOR:", gasStepText);
+			Assert.DoesNotContain("FGPART:", gasStepText);
 			await using CadDocument reimported = await CadDocument.CreateAsync(cancellationToken);
 			CadPart imported = new() { Id = Guid.NewGuid(), Name = "Reimported Corsa assembly" };
 			await reimported.ImportStepAsync(imported, stepPath, cancellationToken);
 			Assert.NotEmpty((await reimported.GetTopologyAsync(
 				imported.Id,
+				cancellationToken
+			)).Value);
+			CadPart importedGas = new()
+			{
+				Id = Guid.NewGuid(),
+				Name = "Reimported Corsa gas domain",
+			};
+			await reimported.ImportStepAsync(importedGas, gasStepPath, cancellationToken);
+			Assert.NotEmpty((await reimported.GetTopologyAsync(
+				importedGas.Id,
 				cancellationToken
 			)).Value);
 		}
