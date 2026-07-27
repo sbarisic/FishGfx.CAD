@@ -1,0 +1,3 @@
+[submodule "external/FishGfx"]
+	path = external/FishGfx
+	url = https://github.com/sbarisic/FishGfx.git

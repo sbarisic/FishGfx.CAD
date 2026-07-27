@@ -1,0 +1,58 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FishGfx", "external\FishGfx\FishGfx\FishGfx.csproj", "{CAA97696-2CE8-4322-9611-578AB5C49D4D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FishGfx.FishUI", "external\FishGfx\FishGfx.FishUI\FishGfx.FishUI.csproj", "{D9CC51AB-9BDC-4DB5-AEB0-552790CD22A0}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FishUI", "external\FishGfx\thirdparty\FishUI\FishUI\FishUI.csproj", "{BDA59EA5-6E1C-48E3-9E4C-5045F1F2B4F3}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FishGfx.CadKernel", "FishGfx.CadKernel\FishGfx.CadKernel.csproj", "{D89B8CBD-BDB3-4426-BDC6-E3383E99DD55}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FishGfx.Im3d", "FishGfx.Im3d\FishGfx.Im3d.csproj", "{A7D91BC4-3F14-4DBE-B5A7-C347A09A8C18}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FishGfx.ManifoldCad", "FishGfx.ManifoldCad\FishGfx.ManifoldCad.csproj", "{4C5A6762-BED5-453C-8149-12C902DBF514}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FishGfx.ManifoldCad.Tests", "FishGfx.ManifoldCad.Tests\FishGfx.ManifoldCad.Tests.csproj", "{0950A661-4783-4A3A-856A-08C607357A5A}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{CAA97696-2CE8-4322-9611-578AB5C49D4D}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{CAA97696-2CE8-4322-9611-578AB5C49D4D}.Debug|x64.Build.0 = Debug|Any CPU
+		{CAA97696-2CE8-4322-9611-578AB5C49D4D}.Release|x64.ActiveCfg = Release|Any CPU
+		{CAA97696-2CE8-4322-9611-578AB5C49D4D}.Release|x64.Build.0 = Release|Any CPU
+		{D9CC51AB-9BDC-4DB5-AEB0-552790CD22A0}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D9CC51AB-9BDC-4DB5-AEB0-552790CD22A0}.Debug|x64.Build.0 = Debug|Any CPU
+		{D9CC51AB-9BDC-4DB5-AEB0-552790CD22A0}.Release|x64.ActiveCfg = Release|Any CPU
+		{D9CC51AB-9BDC-4DB5-AEB0-552790CD22A0}.Release|x64.Build.0 = Release|Any CPU
+		{BDA59EA5-6E1C-48E3-9E4C-5045F1F2B4F3}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{BDA59EA5-6E1C-48E3-9E4C-5045F1F2B4F3}.Debug|x64.Build.0 = Debug|Any CPU
+		{BDA59EA5-6E1C-48E3-9E4C-5045F1F2B4F3}.Release|x64.ActiveCfg = Release|Any CPU
+		{BDA59EA5-6E1C-48E3-9E4C-5045F1F2B4F3}.Release|x64.Build.0 = Release|Any CPU
+		{D89B8CBD-BDB3-4426-BDC6-E3383E99DD55}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D89B8CBD-BDB3-4426-BDC6-E3383E99DD55}.Debug|x64.Build.0 = Debug|Any CPU
+		{D89B8CBD-BDB3-4426-BDC6-E3383E99DD55}.Release|x64.ActiveCfg = Release|Any CPU
+		{D89B8CBD-BDB3-4426-BDC6-E3383E99DD55}.Release|x64.Build.0 = Release|Any CPU
+		{A7D91BC4-3F14-4DBE-B5A7-C347A09A8C18}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{A7D91BC4-3F14-4DBE-B5A7-C347A09A8C18}.Debug|x64.Build.0 = Debug|Any CPU
+		{A7D91BC4-3F14-4DBE-B5A7-C347A09A8C18}.Release|x64.ActiveCfg = Release|Any CPU
+		{A7D91BC4-3F14-4DBE-B5A7-C347A09A8C18}.Release|x64.Build.0 = Release|Any CPU
+		{4C5A6762-BED5-453C-8149-12C902DBF514}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{4C5A6762-BED5-453C-8149-12C902DBF514}.Debug|x64.Build.0 = Debug|Any CPU
+		{4C5A6762-BED5-453C-8149-12C902DBF514}.Release|x64.ActiveCfg = Release|Any CPU
+		{4C5A6762-BED5-453C-8149-12C902DBF514}.Release|x64.Build.0 = Release|Any CPU
+		{0950A661-4783-4A3A-856A-08C607357A5A}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{0950A661-4783-4A3A-856A-08C607357A5A}.Debug|x64.Build.0 = Debug|Any CPU
+		{0950A661-4783-4A3A-856A-08C607357A5A}.Release|x64.ActiveCfg = Release|Any CPU
+		{0950A661-4783-4A3A-856A-08C607357A5A}.Release|x64.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal
