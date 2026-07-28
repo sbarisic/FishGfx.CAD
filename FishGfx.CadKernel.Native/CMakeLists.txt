@@ -7,6 +7,7 @@ find_package(OpenCASCADE CONFIG REQUIRED)
 add_library(FishGfx.CadKernel.Native SHARED
     src/CadKernel.cpp
     src/CadKernel.Collectors.inl
+    src/CadKernel.Cfd.inl
     src/CadKernel.Curves.inl
     src/CadKernel.Documents.inl
     src/CadKernel.EvaluationApi.inl

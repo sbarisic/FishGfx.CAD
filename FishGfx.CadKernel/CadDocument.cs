@@ -729,6 +729,53 @@ public sealed class CadDocument : IAsyncDisposable, IDisposable
 		}, cancellationToken);
 	}
 
+	public Task<CadGasPackageInfo> ExportGasPackageAsync(
+		string path,
+		CancellationToken cancellationToken = default)
+	{
+		return InvokeAsync(() =>
+		{
+			string fullPath = Path.GetFullPath(path);
+			string directory = Path.GetDirectoryName(fullPath)
+				?? throw new ArgumentException("The package path has no parent directory.", nameof(path));
+			Directory.CreateDirectory(directory);
+			string stepPath = Path.Combine(
+				directory,
+				$".{Path.GetFileName(fullPath)}.{Guid.NewGuid():N}.step");
+			try
+			{
+				Check(
+					NativeMethods.DocumentExportGasStep(handle, stepPath),
+					"Export gas STEP AP242");
+				string manifest = CopyGasManifestJson();
+				return CadGasPackageWriter.Write(fullPath, stepPath, manifest);
+			}
+			finally
+			{
+				File.Delete(stepPath);
+			}
+		}, cancellationToken);
+	}
+
+	private unsafe string CopyGasManifestJson()
+	{
+		Check(
+			NativeMethods.DocumentGetGasManifestJsonSize(handle, out nuint byteCount),
+			"Get gas package manifest size");
+		if (byteCount == 0 || byteCount > int.MaxValue)
+		{
+			throw new CadKernelException("Get gas package manifest", "The native manifest size is invalid.");
+		}
+		byte[] buffer = new byte[(int)byteCount];
+		fixed (byte* destination = buffer)
+		{
+			Check(
+				NativeMethods.DocumentCopyGasManifestJson(handle, destination, byteCount),
+				"Copy gas package manifest");
+		}
+		return System.Text.Encoding.UTF8.GetString(buffer, 0, buffer.Length - 1);
+	}
+
 	public void Dispose()
 	{
 		if (disposed)
@@ -822,7 +869,7 @@ public sealed class CadDocument : IAsyncDisposable, IDisposable
 		}
 	}
 
-	private static unsafe CadTessellation CopyTessellation(CadTessellationSafeHandle handle)
+	internal static unsafe CadTessellation CopyTessellation(CadTessellationSafeHandle handle)
 	{
 		NativeMeshVertex[] vertices = new NativeMeshVertex[checked((int)NativeMethods.TessellationVertexCount(handle))];
 		uint[] indices = new uint[checked((int)NativeMethods.TessellationIndexCount(handle))];
@@ -902,7 +949,7 @@ public sealed class CadDocument : IAsyncDisposable, IDisposable
 		}
 	}
 
-	private static void Check(NativeStatus status, string operation)
+	internal static void Check(NativeStatus status, string operation)
 	{
 		if (status != NativeStatus.Ok)
 		{

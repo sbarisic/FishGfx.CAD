@@ -1,0 +1,70 @@
+FoamFile { format ascii; class dictionary; location "system"; object snappyHexMeshDict; }
+castellatedMesh true;
+snap true;
+addLayers true;
+geometry
+{
+    gasDomain { type triSurfaceMesh; file "gas-domain.stl"; }
+}
+castellatedMeshControls
+{
+    maxLocalCells {{MAX_CELLS}};
+    maxGlobalCells {{MAX_CELLS}};
+    minRefinementCells 0;
+    maxLoadUnbalance 0.10;
+    nCellsBetweenLevels 2;
+    features ({ file "gas-domain.eMesh"; level {{OPENING_LEVEL}}; });
+    refinementSurfaces
+    {
+        gasDomain
+        {
+            level ({{WALL_LEVEL}} {{WALL_LEVEL}});
+            regions
+            {
+                {{PATCH_REGIONS}}
+            }
+        }
+    }
+    resolveFeatureAngle {{FEATURE_ANGLE}};
+    refinementRegions { }
+    locationInMesh ({{LOCATION_X}} {{LOCATION_Y}} {{LOCATION_Z}});
+    allowFreeStandingZoneFaces true;
+}
+snapControls
+{
+    nSmoothPatch 3;
+    tolerance 2.0;
+    nSolveIter 30;
+    nRelaxIter 5;
+    nFeatureSnapIter 10;
+    implicitFeatureSnap false;
+    explicitFeatureSnap true;
+    multiRegionFeatureSnap true;
+}
+addLayersControls
+{
+    relativeSizes false;
+    layers { {{LAYERS}} }
+    expansionRatio {{LAYER_EXPANSION}};
+    firstLayerThickness {{FIRST_LAYER_METERS}};
+    minThickness 1e-6;
+    nGrow 0;
+    featureAngle {{FEATURE_ANGLE}};
+    nRelaxIter 5;
+    nSmoothSurfaceNormals 1;
+    nSmoothNormals 3;
+    nSmoothThickness 10;
+    maxFaceThicknessRatio 0.5;
+    maxThicknessToMedialRatio 0.3;
+    minMedialAxisAngle 90;
+    nBufferCellsNoExtrude 0;
+    nLayerIter 50;
+}
+meshQualityControls
+{
+    #includeEtc "caseDicts/mesh/generation/meshQualityDict.cfg"
+    maxBoundarySkewness 4;
+    minTetQuality 1e-15;
+}
+writeFlags (scalarLevels layerSets layerFields);
+mergeTolerance 1e-6;

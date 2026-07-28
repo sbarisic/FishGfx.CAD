@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -275,6 +276,8 @@ struct collector_record
 	std::string gas_key;
 	std::vector<TopoDS_Face> gas_outlet_faces;
 	std::vector<TopoDS_Face> gas_entrance_faces;
+	std::vector<std::vector<TopoDS_Face>> gas_entrance_face_groups;
+	std::vector<std::string> gas_entrance_group_runner_ids;
 	TopoDS_Shape wall_shape;
 	std::vector<TopoDS_Shape> wall_component_shapes;
 	std::vector<TopoDS_Shape> coupler_shapes;
@@ -690,6 +693,18 @@ Handle(TDocStd_Document) make_xcaf_document(
 				gas_definition,
 				extended("FGRUNNERGAS:" + runner.id)
 			);
+			if (!runner.gas_start_cap.IsNull())
+			{
+				TDF_Label opening = shapes->AddShape(runner.gas_start_cap, false);
+				TDataStd_Name::Set(opening, extended(
+					"FGGASOPENING:V1:RUNNER:" + runner.id + ":START"));
+			}
+			if (!runner.gas_end_cap.IsNull())
+			{
+				TDF_Label opening = shapes->AddShape(runner.gas_end_cap, false);
+				TDataStd_Name::Set(opening, extended(
+					"FGGASOPENING:V1:RUNNER:" + runner.id + ":END"));
+			}
 		}
 		if (std::find(fused_runner_ids.begin(), fused_runner_ids.end(), runner.id)
 			!= fused_runner_ids.end())
@@ -720,6 +735,32 @@ Handle(TDocStd_Document) make_xcaf_document(
 				gas_definition,
 				extended("FGCOLLECTORGAS:" + collector.id)
 			);
+			for (size_t index = 0;
+				index < collector.gas_entrance_face_groups.size()
+					&& index < collector.gas_entrance_group_runner_ids.size();
+				++index)
+			{
+				BRep_Builder opening_builder;
+				TopoDS_Compound opening_compound;
+				opening_builder.MakeCompound(opening_compound);
+				for (const TopoDS_Face& face : collector.gas_entrance_face_groups[index])
+					opening_builder.Add(opening_compound, face);
+				TDF_Label opening = shapes->AddShape(opening_compound, false);
+				TDataStd_Name::Set(opening, extended(
+					"FGGASOPENING:V1:COLLECTOR:" + collector.id + ":INLET:"
+						+ collector.gas_entrance_group_runner_ids[index]));
+			}
+			if (!collector.gas_outlet_faces.empty())
+			{
+				BRep_Builder opening_builder;
+				TopoDS_Compound opening_compound;
+				opening_builder.MakeCompound(opening_compound);
+				for (const TopoDS_Face& face : collector.gas_outlet_faces)
+					opening_builder.Add(opening_compound, face);
+				TDF_Label opening = shapes->AddShape(opening_compound, false);
+				TDataStd_Name::Set(opening, extended(
+					"FGGASOPENING:V1:COLLECTOR:" + collector.id + ":OUTLET"));
+			}
 		}
 		if (collector.shape.IsNull()) continue;
 		TDF_Label definition = shapes->AddShape(collector.shape, false);
@@ -1112,6 +1153,29 @@ struct fgcad_document
 	uint64_t source_geometry_revision{};
 };
 
+struct cfd_path_record
+{
+	fgcad_cfd_path_info info{};
+	TopoDS_Shape shape;
+};
+
+struct cfd_opening_region
+{
+	std::string id;
+	std::string patch_name;
+	fgcad_cfd_opening_role role{};
+	std::vector<TopoDS_Face> faces;
+};
+
+struct fgcad_cfd_geometry
+{
+	Handle(TDocStd_Document) document;
+	std::vector<cfd_path_record> paths;
+	TopoDS_Shape selected_shape;
+	std::vector<cfd_opening_region> openings;
+	fgcad_cfd_geometry_info info{};
+};
+
 namespace
 {
 part_record& find_part(fgcad_document& document, const std::string& id)
@@ -1292,6 +1356,8 @@ extern "C"
 #include "CadKernel.Runners.inl"
 
 #include "CadKernel.Collectors.inl"
+
+#include "CadKernel.Cfd.inl"
 
 #include "CadKernel.Tessellation.inl"
 

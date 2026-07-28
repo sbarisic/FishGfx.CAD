@@ -514,6 +514,28 @@ internal sealed class CadTessellationSafeHandle : SafeHandle
 	}
 }
 
+internal sealed class CfdGeometrySafeHandle : SafeHandle
+{
+	private CfdGeometrySafeHandle()
+		: base(nint.Zero, true)
+	{
+	}
+
+	internal CfdGeometrySafeHandle(nint value)
+		: base(nint.Zero, true)
+	{
+		SetHandle(value);
+	}
+
+	public override bool IsInvalid => handle == nint.Zero;
+
+	protected override bool ReleaseHandle()
+	{
+		NativeMethods.CfdGeometryDestroy(handle);
+		return true;
+	}
+}
+
 internal static partial class NativeMethods
 {
 	internal const string Library = "FishGfx.CadKernel.Native";
@@ -790,6 +812,55 @@ internal static partial class NativeMethods
 
 	[LibraryImport(Library, EntryPoint = "fgcad_document_export_gas_step_ap242", StringMarshalling = StringMarshalling.Utf8)]
 	internal static partial NativeStatus DocumentExportGasStep(CadDocumentSafeHandle document, string path);
+
+	[LibraryImport(Library, EntryPoint = "fgcad_document_get_gas_manifest_json_size")]
+	internal static partial NativeStatus DocumentGetGasManifestJsonSize(
+		CadDocumentSafeHandle document,
+		out nuint byteCount);
+
+	[LibraryImport(Library, EntryPoint = "fgcad_document_copy_gas_manifest_json")]
+	internal static unsafe partial NativeStatus DocumentCopyGasManifestJson(
+		CadDocumentSafeHandle document,
+		byte* utf8Json,
+		nuint byteCapacity);
+
+	[LibraryImport(Library, EntryPoint = "fgcad_cfd_geometry_import_step", StringMarshalling = StringMarshalling.Utf8)]
+	internal static partial NativeStatus CfdGeometryImportStep(string path, out nint geometry);
+
+	[LibraryImport(Library, EntryPoint = "fgcad_cfd_geometry_destroy")]
+	internal static partial void CfdGeometryDestroy(nint geometry);
+
+	[LibraryImport(Library, EntryPoint = "fgcad_cfd_geometry_get_path_count")]
+	internal static partial NativeStatus CfdGeometryGetPathCount(CfdGeometrySafeHandle geometry, out nuint count);
+
+	[LibraryImport(Library, EntryPoint = "fgcad_cfd_geometry_copy_paths")]
+	internal static unsafe partial NativeStatus CfdGeometryCopyPaths(
+		CfdGeometrySafeHandle geometry,
+		NativeCfdPathInfo* paths,
+		nuint capacity);
+
+	[LibraryImport(Library, EntryPoint = "fgcad_cfd_geometry_prepare_path", StringMarshalling = StringMarshalling.Utf8)]
+	internal static unsafe partial NativeStatus CfdGeometryPreparePath(
+		CfdGeometrySafeHandle geometry,
+		string pathId,
+		NativeCfdOpeningSpec* openings,
+		nuint openingCount,
+		in NativeCfdMatchingPolicy policy,
+		NativeCfdMatchResult* results,
+		nuint resultCapacity,
+		out NativeCfdGeometryInfo info);
+
+	[LibraryImport(Library, EntryPoint = "fgcad_cfd_geometry_tessellate")]
+	internal static partial NativeStatus CfdGeometryTessellate(
+		CfdGeometrySafeHandle geometry,
+		double linearDeflection,
+		double angularDeflection,
+		out nint tessellation);
+
+	[LibraryImport(Library, EntryPoint = "fgcad_cfd_geometry_export_multi_region_stl", StringMarshalling = StringMarshalling.Utf8)]
+	internal static partial NativeStatus CfdGeometryExportMultiRegionStl(
+		CfdGeometrySafeHandle geometry,
+		string path);
 
 	internal static string LastError()
 	{

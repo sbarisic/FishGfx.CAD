@@ -1,10 +1,77 @@
 using FishGfx.Cad;
+using System.IO.Compression;
+using System.Text.Json;
 using Xunit;
 
 namespace FishGfx.ManifoldCad.Tests;
 
 public sealed class NativeIntegrationTests
 {
+	[Fact]
+	public async Task StandaloneRunnerGasPackageIsDeterministicAndSurvivesXcafReload()
+	{
+		CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+		(ManifoldProject project, _, CadRunner runner) = RunnerGraphTests.CreateProject();
+		string directory = Path.Combine(Path.GetTempPath(), $"fishgfx-gas-package-{Guid.NewGuid():N}");
+		Directory.CreateDirectory(directory);
+		try
+		{
+			await using CadDocument document = await CadDocument.CreateAsync(cancellationToken);
+			RunnerEvaluationResult evaluation = await project.EvaluateRunnerAsync(
+				document, runner, cancellationToken);
+			Assert.True(evaluation.Success);
+			await document.BuildRunnerAsync(runner, evaluation, cancellationToken);
+			string first = Path.Combine(directory, "first.fggas");
+			string second = Path.Combine(directory, "second.fggas");
+			CadGasPackageInfo firstInfo = await document.ExportGasPackageAsync(first, cancellationToken);
+			CadGasPackageInfo secondInfo = await document.ExportGasPackageAsync(second, cancellationToken);
+			if (firstInfo.GeometryStepHash != secondInfo.GeometryStepHash)
+			{
+				string[] firstLines = PackageEntryText(first, "geometry.step").Split('\n');
+				string[] secondLines = PackageEntryText(second, "geometry.step").Split('\n');
+				string difference = string.Join(Environment.NewLine, firstLines.Zip(secondLines)
+					.Where(pair => pair.First != pair.Second).Take(10)
+					.Select(pair => $"FIRST: {pair.First}{Environment.NewLine}SECOND: {pair.Second}"));
+				Assert.Fail($"Geometry STEP is nondeterministic.{Environment.NewLine}{difference}");
+			}
+			Assert.Equal(firstInfo.CanonicalManifestHash, secondInfo.CanonicalManifestHash);
+			Assert.Equal(firstInfo.PackageFileHash, secondInfo.PackageFileHash);
+			Assert.Equal(await File.ReadAllBytesAsync(first, cancellationToken),
+				await File.ReadAllBytesAsync(second, cancellationToken));
+
+			using (ZipArchive archive = ZipFile.OpenRead(first))
+			using (JsonDocument manifest = JsonDocument.Parse(archive.GetEntry("patches.json")!.Open()))
+			{
+				JsonElement path = Assert.Single(manifest.RootElement.GetProperty("paths").EnumerateArray());
+				Assert.Equal("runner", path.GetProperty("kind").GetString());
+				Assert.Equal(2, path.GetProperty("openings").GetArrayLength());
+			}
+
+			string xcaf = Path.Combine(directory, "model.xbf");
+			await document.SaveXcafAsync(xcaf, cancellationToken);
+			await using CadDocument reopened = await CadDocument.CreateAsync(cancellationToken);
+			await reopened.LoadXcafAsync(xcaf, cancellationToken);
+			CadGasPackageInfo reopenedInfo = await reopened.ExportGasPackageAsync(
+				Path.Combine(directory, "reopened.fggas"), cancellationToken);
+			Assert.False(string.IsNullOrWhiteSpace(reopenedInfo.GeometryStepHash));
+			using ZipArchive reopenedArchive = ZipFile.OpenRead(reopenedInfo.Path);
+			using JsonDocument reopenedManifest = JsonDocument.Parse(
+				reopenedArchive.GetEntry("patches.json")!.Open());
+			Assert.Single(reopenedManifest.RootElement.GetProperty("paths").EnumerateArray());
+		}
+		finally
+		{
+			Directory.Delete(directory, true);
+		}
+	}
+
+	private static string PackageEntryText(string packagePath, string entryName)
+	{
+		using ZipArchive archive = ZipFile.OpenRead(packagePath);
+		using StreamReader reader = new(archive.GetEntry(entryName)!.Open());
+		return reader.ReadToEnd();
+	}
+
 	[Fact]
 	public async Task ReverseFacingExactMateProfileBuildsAndTessellates()
 	{

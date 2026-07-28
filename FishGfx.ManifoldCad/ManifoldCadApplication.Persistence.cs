@@ -243,6 +243,25 @@ internal sealed partial class ManifoldCadApplication
 		});
 	}
 
+	private void ExportGasPackage(string path)
+	{
+		TryOperation(() =>
+		{
+			EnsureExactSnapshotCurrent();
+			if (!CanExportProject(project, evaluations, runnerBuildErrors))
+			{
+				throw new InvalidOperationException(
+					"CFD export is disabled until every runner and collector has current exact geometry."
+				);
+			}
+			CadGasPackageInfo package = document.ExportGasPackageAsync(path)
+				.GetAwaiter().GetResult();
+			ui.SetStatus(
+				$"Exported CFD gas package {Path.GetFileName(package.Path)} ({package.PackageFileHash[..12]})."
+			);
+		});
+	}
+
 	internal static bool CanExportRunners(
 		IReadOnlyList<CadRunner> runners,
 		IReadOnlyDictionary<Guid, RunnerEvaluationResult> runnerEvaluations,

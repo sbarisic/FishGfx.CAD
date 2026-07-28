@@ -10,6 +10,12 @@ internal static class Program
 		log.Info($"Log file: {log.Path}");
 		try
 		{
+			if (args.Length == 3
+				&& string.Equals(args[0], "--export-cfd", StringComparison.OrdinalIgnoreCase))
+			{
+				HeadlessCfdExport.Export(args[1], args[2]);
+				return 0;
+			}
 			using ManifoldCadApplication application = new(args);
 			application.Run();
 			return 0;

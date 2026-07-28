@@ -1,0 +1,14 @@
+FoamFile { format ascii; class dictionary; location "system"; object surfaceFeaturesDict; }
+surfaces ("gas-domain.stl");
+includedAngle {{INCLUDED_ANGLE}};
+subsetFeatures
+{
+    nonManifoldEdges yes;
+    openEdges yes;
+}
+trimFeatures
+{
+    minElem 0;
+    minLen 0;
+}
+writeObj no;

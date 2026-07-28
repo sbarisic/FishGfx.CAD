@@ -3578,6 +3578,8 @@ fgcad_status fgcad_document_build_collector_system(
 		};
 
 		replacement.gas_entrance_faces.clear();
+		replacement.gas_entrance_face_groups.clear();
+		replacement.gas_entrance_group_runner_ids.clear();
 		for (size_t index = 0; index < members.size(); ++index)
 		{
 			GProp_GProps source_properties;
@@ -3589,6 +3591,8 @@ fgcad_status fgcad_document_build_collector_system(
 				members[index]->gas_start_frame,
 				std::abs(source_properties.Mass()),
 				"Collector member gas entrance " + std::to_string(index + 1));
+			replacement.gas_entrance_face_groups.push_back(faces);
+			replacement.gas_entrance_group_runner_ids.push_back(replacement.runner_ids[index]);
 			for (const TopoDS_Face& face : faces)
 			{
 				append_unique_face(replacement.gas_entrance_faces, face);

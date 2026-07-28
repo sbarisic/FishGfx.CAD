@@ -1,0 +1,24 @@
+FoamFile { format ascii; class dictionary; location "system"; object blockMeshDict; }
+scale 1;
+vertices
+(
+    ({{MIN_X}} {{MIN_Y}} {{MIN_Z}})
+    ({{MAX_X}} {{MIN_Y}} {{MIN_Z}})
+    ({{MAX_X}} {{MAX_Y}} {{MIN_Z}})
+    ({{MIN_X}} {{MAX_Y}} {{MIN_Z}})
+    ({{MIN_X}} {{MIN_Y}} {{MAX_Z}})
+    ({{MAX_X}} {{MIN_Y}} {{MAX_Z}})
+    ({{MAX_X}} {{MAX_Y}} {{MAX_Z}})
+    ({{MIN_X}} {{MAX_Y}} {{MAX_Z}})
+);
+blocks ( hex (0 1 2 3 4 5 6 7) ({{NX}} {{NY}} {{NZ}}) simpleGrading (1 1 1) );
+edges ();
+boundary
+(
+    background
+    {
+        type patch;
+        faces ((0 4 7 3) (1 2 6 5) (0 1 5 4) (3 7 6 2) (0 3 2 1) (4 5 6 7));
+    }
+);
+mergePatchPairs ();

@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "FishGfx.CFD - Corsa flow": {
+      "commandName": "Project",
+      "commandLineArgs": "view \"artifacts\\cfd-acceptance\\crsa.fgcfd\"",
+      "workingDirectory": "..\\"
+    }
+  }
+}

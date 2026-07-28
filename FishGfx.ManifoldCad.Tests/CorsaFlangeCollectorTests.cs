@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Text.Json;
 using FishGfx.Cad;
 using Xunit;
@@ -480,6 +481,7 @@ public sealed class CorsaFlangeCollectorTests
 			string reopenedXcafPath = Path.Combine(directory, "reopened.xbf");
 			string stepPath = Path.Combine(directory, "corsa-ap242.step");
 			string gasStepPath = Path.Combine(directory, "corsa-gas-ap242.step");
+			string gasPackagePath = Path.Combine(directory, "corsa-gas.fggas");
 			await fixture.Document.SaveXcafAsync(xcafPath, cancellationToken);
 			CadProjectArchive.Save(
 				archivePath,
@@ -541,10 +543,28 @@ public sealed class CorsaFlangeCollectorTests
 				));
 				await reopened.ExportStepAsync(stepPath, cancellationToken);
 				await reopened.ExportGasStepAsync(gasStepPath, cancellationToken);
+				CadGasPackageInfo packageInfo = await reopened.ExportGasPackageAsync(
+					gasPackagePath,
+					cancellationToken);
+				Assert.Equal(gasPackagePath, packageInfo.Path, ignoreCase: true);
 			}
 
 			Assert.True(new FileInfo(stepPath).Length > 0);
 			Assert.True(new FileInfo(gasStepPath).Length > 0);
+			Assert.True(new FileInfo(gasPackagePath).Length > 0);
+			using (ZipArchive gasPackage = ZipFile.OpenRead(gasPackagePath))
+			{
+				Assert.Equal(new[] { "geometry.step", "patches.json" },
+					gasPackage.Entries.Select(entry => entry.FullName));
+				using JsonDocument manifest = JsonDocument.Parse(
+					gasPackage.GetEntry("patches.json")!.Open());
+				Assert.Equal("fishgfx.gas-patches",
+					manifest.RootElement.GetProperty("schema").GetString());
+				JsonElement gasPath = Assert.Single(
+					manifest.RootElement.GetProperty("paths").EnumerateArray());
+				Assert.Equal(4, gasPath.GetProperty("openings").EnumerateArray()
+					.Count(opening => opening.GetProperty("role").GetString() == "inlet"));
+			}
 			string gasStepText = await File.ReadAllTextAsync(
 				gasStepPath,
 				cancellationToken);

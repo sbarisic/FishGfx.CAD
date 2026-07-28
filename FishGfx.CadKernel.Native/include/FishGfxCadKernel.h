@@ -17,6 +17,7 @@ extern "C" {
 
 typedef struct fgcad_document fgcad_document;
 typedef struct fgcad_tessellation fgcad_tessellation;
+typedef struct fgcad_cfd_geometry fgcad_cfd_geometry;
 
 typedef enum fgcad_status
 {
@@ -260,6 +261,71 @@ typedef struct fgcad_build_metrics
 	uint32_t vertex_count;
 } fgcad_build_metrics;
 
+typedef enum fgcad_cfd_path_kind
+{
+	FGCAD_CFD_PATH_RUNNER = 0,
+	FGCAD_CFD_PATH_COLLECTOR = 1,
+} fgcad_cfd_path_kind;
+
+typedef enum fgcad_cfd_opening_role
+{
+	FGCAD_CFD_OPENING_INLET = 0,
+	FGCAD_CFD_OPENING_OUTLET = 1,
+} fgcad_cfd_opening_role;
+
+typedef struct fgcad_cfd_path_info
+{
+	char id[40];
+	char name[128];
+	char component_name[256];
+	fgcad_cfd_path_kind kind;
+} fgcad_cfd_path_info;
+
+typedef struct fgcad_cfd_matching_policy
+{
+	uint32_t version;
+	double area_absolute_tolerance;
+	double area_relative_tolerance;
+	double centroid_tolerance_mm;
+	double normal_angular_tolerance_degrees;
+	double perimeter_relative_tolerance;
+	double loop_sample_tolerance_mm;
+	double unique_score_margin;
+} fgcad_cfd_matching_policy;
+
+typedef struct fgcad_cfd_opening_spec
+{
+	char id[128];
+	char patch_name[128];
+	fgcad_cfd_opening_role role;
+	double area;
+	fgcad_point3 centroid;
+	fgcad_point3 normal;
+	uint32_t loop_count;
+	double perimeter;
+	uint32_t edge_length_count;
+	double edge_lengths[64];
+	uint32_t loop_sample_count;
+	fgcad_point3 loop_samples[64];
+} fgcad_cfd_opening_spec;
+
+typedef struct fgcad_cfd_match_result
+{
+	char opening_id[128];
+	char selected_candidate[128];
+	double best_score;
+	double second_best_score;
+	uint32_t failed_tolerance_mask;
+} fgcad_cfd_match_result;
+
+typedef struct fgcad_cfd_geometry_info
+{
+	fgcad_point3 minimum_mm;
+	fgcad_point3 maximum_mm;
+	fgcad_point3 interior_point_mm;
+	double smallest_inlet_hydraulic_diameter_mm;
+} fgcad_cfd_geometry_info;
+
 FGCAD_API uint32_t fgcad_api_version(void);
 FGCAD_API const char* fgcad_last_error(void);
 FGCAD_API fgcad_status fgcad_evaluate_cubic_bezier(
@@ -446,6 +512,49 @@ FGCAD_API fgcad_status fgcad_document_export_step_ap242(
 );
 FGCAD_API fgcad_status fgcad_document_export_gas_step_ap242(
 	fgcad_document* document,
+	const char* path_utf8
+);
+FGCAD_API fgcad_status fgcad_document_get_gas_manifest_json_size(
+	fgcad_document* document,
+	size_t* byte_count
+);
+FGCAD_API fgcad_status fgcad_document_copy_gas_manifest_json(
+	fgcad_document* document,
+	char* utf8_json,
+	size_t byte_capacity
+);
+FGCAD_API fgcad_status fgcad_cfd_geometry_import_step(
+	const char* path_utf8,
+	fgcad_cfd_geometry** geometry
+);
+FGCAD_API void fgcad_cfd_geometry_destroy(fgcad_cfd_geometry* geometry);
+FGCAD_API fgcad_status fgcad_cfd_geometry_get_path_count(
+	fgcad_cfd_geometry* geometry,
+	size_t* count
+);
+FGCAD_API fgcad_status fgcad_cfd_geometry_copy_paths(
+	fgcad_cfd_geometry* geometry,
+	fgcad_cfd_path_info* paths,
+	size_t capacity
+);
+FGCAD_API fgcad_status fgcad_cfd_geometry_prepare_path(
+	fgcad_cfd_geometry* geometry,
+	const char* path_id,
+	const fgcad_cfd_opening_spec* openings,
+	size_t opening_count,
+	const fgcad_cfd_matching_policy* policy,
+	fgcad_cfd_match_result* results,
+	size_t result_capacity,
+	fgcad_cfd_geometry_info* info
+);
+FGCAD_API fgcad_status fgcad_cfd_geometry_tessellate(
+	fgcad_cfd_geometry* geometry,
+	double linear_deflection,
+	double angular_deflection,
+	fgcad_tessellation** tessellation
+);
+FGCAD_API fgcad_status fgcad_cfd_geometry_export_multi_region_stl(
+	fgcad_cfd_geometry* geometry,
 	const char* path_utf8
 );
 

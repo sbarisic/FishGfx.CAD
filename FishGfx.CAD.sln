@@ -17,6 +17,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FishGfx.ManifoldCad", "Fish
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FishGfx.ManifoldCad.Tests", "FishGfx.ManifoldCad.Tests\FishGfx.ManifoldCad.Tests.csproj", "{0950A661-4783-4A3A-856A-08C607357A5A}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FishGfx.CFD", "FishGfx.CFD\FishGfx.CFD.csproj", "{72D6304E-E2C7-4D71-9F00-37F375EEAE72}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FishGfx.CFD.Tests", "FishGfx.CFD.Tests\FishGfx.CFD.Tests.csproj", "{61A4FA13-B646-4E67-8E90-3C3C7C02BA6E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -51,6 +55,14 @@ Global
 		{0950A661-4783-4A3A-856A-08C607357A5A}.Debug|x64.Build.0 = Debug|Any CPU
 		{0950A661-4783-4A3A-856A-08C607357A5A}.Release|x64.ActiveCfg = Release|Any CPU
 		{0950A661-4783-4A3A-856A-08C607357A5A}.Release|x64.Build.0 = Release|Any CPU
+		{72D6304E-E2C7-4D71-9F00-37F375EEAE72}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{72D6304E-E2C7-4D71-9F00-37F375EEAE72}.Debug|x64.Build.0 = Debug|Any CPU
+		{72D6304E-E2C7-4D71-9F00-37F375EEAE72}.Release|x64.ActiveCfg = Release|Any CPU
+		{72D6304E-E2C7-4D71-9F00-37F375EEAE72}.Release|x64.Build.0 = Release|Any CPU
+		{61A4FA13-B646-4E67-8E90-3C3C7C02BA6E}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{61A4FA13-B646-4E67-8E90-3C3C7C02BA6E}.Debug|x64.Build.0 = Debug|Any CPU
+		{61A4FA13-B646-4E67-8E90-3C3C7C02BA6E}.Release|x64.ActiveCfg = Release|Any CPU
+		{61A4FA13-B646-4E67-8E90-3C3C7C02BA6E}.Release|x64.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

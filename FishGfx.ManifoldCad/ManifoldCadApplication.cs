@@ -153,6 +153,7 @@ internal sealed partial class ManifoldCadApplication : IDisposable
 		ui.SaveDraftRequested += SaveDraft;
 		ui.ExportRequested += ExportStep;
 		ui.ExportGasRequested += ExportGasStep;
+		ui.ExportCfdRequested += ExportGasPackage;
 		ui.RebuildExactRequested += RequestExactRebuild;
 		ui.CreateMateRequested += CreateOrRebindMate;
 		ui.FlipMateRequested += FlipMate;

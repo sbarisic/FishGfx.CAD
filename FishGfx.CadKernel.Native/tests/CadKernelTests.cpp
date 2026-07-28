@@ -127,7 +127,7 @@ int main()
 		std::cout << "[native-test] " << name << std::endl;
 	};
 	checkpoint("startup");
-	require(fgcad_api_version() == 11, "ABI version mismatch");
+	require(fgcad_api_version() == 12, "ABI version mismatch");
 	fgcad_document* document = nullptr;
 	require(fgcad_document_create(&document) == FGCAD_STATUS_OK, "Document creation failed");
 	require(document != nullptr, "Document handle was null");

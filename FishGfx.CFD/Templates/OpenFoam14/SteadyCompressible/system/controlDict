@@ -1,0 +1,16 @@
+FoamFile { format ascii; class dictionary; location "system"; object controlDict; }
+solver fluid;
+startFrom startTime;
+startTime 0;
+stopAt endTime;
+endTime {{MAX_ITERATIONS}};
+deltaT 1;
+writeControl timeStep;
+writeInterval {{MAX_ITERATIONS}};
+purgeWrite 0;
+writeFormat ascii;
+writePrecision 12;
+writeCompression off;
+timeFormat general;
+timePrecision 8;
+runTimeModifiable false;

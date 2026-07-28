@@ -1,0 +1,17 @@
+FoamFile { format ascii; class dictionary; location "constant"; object physicalProperties; }
+thermoType
+{
+    type hePsiThermo;
+    mixture pureMixture;
+    transport const;
+    thermo hConst;
+    equationOfState perfectGas;
+    specie specie;
+    energy sensibleEnthalpy;
+}
+mixture
+{
+    specie { molWeight {{MOLECULAR_WEIGHT}}; }
+    thermodynamics { Cp {{CP}}; hf 0; }
+    transport { mu {{MU}}; Pr {{PR}}; }
+}
