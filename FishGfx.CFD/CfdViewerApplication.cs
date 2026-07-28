@@ -7,7 +7,7 @@ using FishGfx.Graphics.Drawables;
 
 namespace FishGfx.CFD;
 
-internal sealed class CfdViewerApplication : IDisposable
+internal sealed partial class CfdViewerApplication : IDisposable
 {
 	private static readonly string[] Fields = ["p", "T", "U", "rho", "Ma", "yPlus"];
 	private readonly RenderWindow window;
@@ -16,9 +16,11 @@ internal sealed class CfdViewerApplication : IDisposable
 	private readonly Camera uiCamera = new();
 	private readonly Mesh3D? surface;
 	private readonly Mesh3D? wireframe;
+	private readonly Mesh3D? flowContext;
 	private readonly Mesh3D? slice;
 	private RenderTarget? sceneTarget;
-	private readonly List<(Vector3 Start, Vector3 End, Color Color)> arrows = [];
+	private readonly List<VelocityArrow> arrows = [];
+	private readonly List<CfdStreamline> streamlines = [];
 	private readonly CfdViewerUi ui;
 	private readonly LegacyVtkDataSet? volume;
 	private readonly LegacyVtkDataSet? walls;
@@ -29,8 +31,14 @@ internal sealed class CfdViewerApplication : IDisposable
 	private bool showWireframe;
 	private bool showSlice;
 	private bool showArrows;
+	private bool showStreamlines;
+	private string mode = "Surface";
 	private string field = "p";
+	private int[] slicePointIndices = [];
 	private int slicePointCount;
+	private float slicePlane;
+	private double velocityMaximum;
+	private CfdPickedValue? pickedValue;
 	private Vector3 orbitTarget;
 	private float orbitDistance;
 	private float orbitYaw;
@@ -71,6 +79,11 @@ internal sealed class CfdViewerApplication : IDisposable
 				surfaceIndices,
 				Enumerable.Repeat(new Color(225, 235, 245), surfaceVertices.Length).ToArray());
 			wireframe.PolygonMode = PolygonMode.Line;
+			flowContext = CreateMesh(
+				surfaceVertices,
+				surfaceNormals,
+				surfaceIndices,
+				Enumerable.Repeat(new Color(72, 92, 108, 38), surfaceVertices.Length).ToArray());
 		}
 		if (volume != null)
 		{
@@ -78,22 +91,30 @@ internal sealed class CfdViewerApplication : IDisposable
 			slice.PrimitiveType = PrimitiveType.Points;
 			BuildSlice();
 			BuildArrows();
+			BuildStreamlines(results?.Boundaries.Where(item => item.Role == "inlet").ToArray() ?? []);
 		}
 		FitCamera();
 		ui = new CfdViewerUi(window, summary, Fields);
 		ui.ModeRequested += mode =>
 		{
+			this.mode = mode;
 			showSurface = mode == "Surface";
 			showWireframe = mode == "Mesh";
 			showSlice = mode == "Slice";
 			showArrows = mode == "Velocity";
+			showStreamlines = mode == "Streamlines";
+			pickedValue = null;
+			RefreshLegend();
 		};
 		ui.FieldRequested += selected =>
 		{
 			field = selected;
 			if (surface != null) surface.SetColors(FieldColors(walls, field, surfaceVertices.Length));
 			BuildSlice();
+			pickedValue = null;
+			RefreshLegend();
 		};
+		RefreshLegend();
 	}
 
 	internal void Run()
@@ -110,6 +131,7 @@ internal sealed class CfdViewerApplication : IDisposable
 			ui.BeginFrame();
 			window.PollEvents();
 			UpdateCameraInteraction();
+			UpdatePickingInteraction();
 			ui.Update(1f / 60f, (float)timing.Elapsed.TotalSeconds);
 			EnsureSceneTarget();
 			using RenderFrame frame = window.Graphics.BeginFrame();
@@ -121,6 +143,7 @@ internal sealed class CfdViewerApplication : IDisposable
 					CullMode = CullMode.None,
 					DepthTestEnabled = true,
 					DepthWriteEnabled = true,
+					PointSize = 4,
 				},
 				ColorLoadAction = RenderLoadAction.Clear,
 				DepthLoadAction = RenderLoadAction.Clear,
@@ -132,10 +155,28 @@ internal sealed class CfdViewerApplication : IDisposable
 				if (showWireframe && wireframe is not null) pass.DrawMesh(wireframe);
 				if (showSlice && slice is not null) pass.DrawMesh(slice);
 				if (showArrows)
+					DrawVelocityArrows(pass);
+				if (showStreamlines)
+					DrawStreamlines(pass);
+				if (pickedValue != null)
+					pass.DrawPoint(new Vertex3(pickedValue.Position, Color.Yellow), 11);
+			}
+			if ((showArrows || showStreamlines) && flowContext is not null)
+			{
+				using RenderPass contextPass = frame.BeginPass(sceneTarget!, new RenderPassDescriptor
 				{
-					foreach ((Vector3 start, Vector3 end, Color color) in arrows)
-						pass.DrawLine(new Vertex3(start, color), new Vertex3(end, color), 1.5f);
-				}
+					View = new RenderView(camera),
+					State = RenderState.Default with
+					{
+						CullMode = CullMode.None,
+						DepthTestEnabled = true,
+						DepthWriteEnabled = false,
+					},
+					ColorLoadAction = RenderLoadAction.Load,
+					DepthLoadAction = RenderLoadAction.Load,
+					StencilLoadAction = RenderLoadAction.Load,
+				});
+				contextPass.DrawMesh(flowContext);
 			}
 			using (RenderPass uiPass = frame.BeginPass(window.Graphics.Backbuffer, new RenderPassDescriptor
 			{
@@ -175,7 +216,8 @@ internal sealed class CfdViewerApplication : IDisposable
 				CaptureScreenshot(screenshotPath);
 				Console.WriteLine(
 					$"FISHGFX_CFD_AUTO_OK field={field} surfaceVertices={surfaceVertices.Length} "
-						+ $"slicePoints={slicePointCount} arrows={arrows.Count} screenshot={screenshotPath}");
+						+ $"slicePoints={slicePointCount} arrows={arrows.Count} streamlines={streamlines.Count} "
+						+ $"pick={pickedValue?.PrimaryText ?? "none"} screenshot={screenshotPath}");
 				automaticComplete = true;
 			}
 		}
@@ -267,12 +309,14 @@ internal sealed class CfdViewerApplication : IDisposable
 		float minimum = (float)volume.Points.Min(item => item.Z);
 		float maximum = (float)volume.Points.Max(item => item.Z);
 		float plane = (minimum + maximum) / 2;
+		slicePlane = plane;
 		float thickness = Math.Max((maximum - minimum) * 0.006f, 1e-6f);
 		int stride = Math.Max(1, volume.Points.Length / 30000);
 		List<int> selected = [];
 		for (int index = 0; index < volume.Points.Length; index += stride)
 			if (Math.Abs(volume.Points[index].Z - plane) <= thickness) selected.Add(index);
-		Vector3[] points = selected.Select(index => Point(volume.Points[index])).ToArray();
+		slicePointIndices = selected.ToArray();
+		Vector3[] points = slicePointIndices.Select(index => Point(volume.Points[index])).ToArray();
 		slicePointCount = points.Length;
 		slice.SetVertices(points);
 		slice.SetColors(SelectedPointColors(volume, field, selected));
@@ -284,17 +328,51 @@ internal sealed class CfdViewerApplication : IDisposable
 		if (volume == null || !volume.PointVectors.TryGetValue("U", out VtkVector[]? velocity)) return;
 		double maximum = velocity.Max(item => item.Length);
 		if (!(maximum > 0)) return;
-		Vector3 extent = new(
-			(float)(volume.Points.Max(item => item.X) - volume.Points.Min(item => item.X)),
-			(float)(volume.Points.Max(item => item.Y) - volume.Points.Min(item => item.Y)),
-			(float)(volume.Points.Max(item => item.Z) - volume.Points.Min(item => item.Z)));
-		float scale = extent.Length() * 0.04f / (float)maximum;
-		int stride = Math.Max(1, volume.Points.Length / 600);
-		for (int index = 0; index < volume.Points.Length; index += stride)
+		velocityMaximum = maximum;
+		Vector3 minimum = new(
+			(float)volume.Points.Min(item => item.X),
+			(float)volume.Points.Min(item => item.Y),
+			(float)volume.Points.Min(item => item.Z));
+		Vector3 maximumPoint = new(
+			(float)volume.Points.Max(item => item.X),
+			(float)volume.Points.Max(item => item.Y),
+			(float)volume.Points.Max(item => item.Z));
+		Vector3 extent = maximumPoint - minimum;
+		const int divisions = 8;
+		Dictionary<int, (int Index, float CenterDistance)> selected = [];
+		for (int index = 0; index < volume.Points.Length; ++index)
 		{
+			Vector3 position = Point(volume.Points[index]);
+			Vector3 normalized = new(
+				extent.X > 0 ? (position.X - minimum.X) / extent.X : 0,
+				extent.Y > 0 ? (position.Y - minimum.Y) / extent.Y : 0,
+				extent.Z > 0 ? (position.Z - minimum.Z) / extent.Z : 0);
+			int x = Math.Clamp((int)(normalized.X * divisions), 0, divisions - 1);
+			int y = Math.Clamp((int)(normalized.Y * divisions), 0, divisions - 1);
+			int z = Math.Clamp((int)(normalized.Z * divisions), 0, divisions - 1);
+			int key = x + divisions * (y + divisions * z);
+			Vector3 center = minimum + new Vector3(
+				(x + 0.5f) / divisions * extent.X,
+				(y + 0.5f) / divisions * extent.Y,
+				(z + 0.5f) / divisions * extent.Z);
+			float distance = Vector3.DistanceSquared(position, center);
+			if (!selected.TryGetValue(key, out var current) || distance < current.CenterDistance)
+				selected[key] = (index, distance);
+		}
+		float baseLength = extent.Length();
+		foreach (int index in selected.Values.Select(item => item.Index).Order())
+		{
+			double speed = velocity[index].Length;
+			if (speed <= maximum * 0.002) continue;
 			Vector3 start = Point(volume.Points[index]);
-			Vector3 vector = Point(velocity[index]) * scale;
-			arrows.Add((start, start + vector, new Color(245, 200, 80)));
+			Vector3 direction = Vector3.Normalize(Point(velocity[index]));
+			float normalizedSpeed = (float)Math.Clamp(speed / maximum, 0, 1);
+			float length = baseLength * (0.02f + 0.06f * MathF.Sqrt(normalizedSpeed));
+			arrows.Add(new VelocityArrow(
+				start,
+				start + direction * length,
+				FieldColor(normalizedSpeed),
+				index));
 		}
 	}
 
@@ -350,11 +428,17 @@ internal sealed class CfdViewerApplication : IDisposable
 		return Enumerable.Range(0, count).Select(index =>
 		{
 			double t = Math.Clamp((values[index] - minimum) / range, 0, 1);
-			return new Color(
-				(byte)(30 + 225 * t),
-				(byte)(80 + 140 * (1 - Math.Abs(2 * t - 1))),
-				(byte)(240 - 210 * t));
+			return FieldColor(t);
 		}).ToArray();
+	}
+
+	private static Color FieldColor(double normalized)
+	{
+		double value = Math.Clamp(normalized, 0, 1);
+		return new Color(
+			(byte)(30 + 225 * value),
+			(byte)(80 + 140 * (1 - Math.Abs(2 * value - 1))),
+			(byte)(240 - 210 * value));
 	}
 
 	private static Vector3 Point(VtkVector value) => new((float)value.X, (float)value.Y, (float)value.Z);
@@ -398,6 +482,7 @@ internal sealed class CfdViewerApplication : IDisposable
 		ui.Dispose();
 		surface?.Dispose();
 		wireframe?.Dispose();
+		flowContext?.Dispose();
 		slice?.Dispose();
 		sceneTarget?.Dispose();
 		input.Dispose();
