@@ -1,0 +1,24 @@
+FoamFile { format ascii; class dictionary; location "system"; object controlDict; }
+solver fluid;
+startFrom startTime;
+startTime 0;
+stopAt endTime;
+endTime {{END_TIME}};
+deltaT {{INITIAL_DELTA_T}};
+adjustTimeStep yes;
+maxCo {{MAX_CO}};
+maxDeltaT {{MAX_DELTA_T}};
+writeControl adjustableRunTime;
+writeInterval {{WRITE_INTERVAL}};
+purgeWrite {{PURGE_WRITE}};
+writeFormat binary;
+writePrecision 12;
+writeCompression on;
+timeFormat general;
+timePrecision 12;
+runTimeModifiable true;
+
+functions
+{
+{{TRANSIENT_FUNCTIONS}}
+}

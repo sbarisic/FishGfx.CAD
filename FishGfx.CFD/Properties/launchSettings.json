@@ -1,8 +1,8 @@
 {
   "profiles": {
-    "FishGfx.CFD - Corsa flow": {
+    "FishGfx.CFD - Corsa transient": {
       "commandName": "Project",
-      "commandLineArgs": "view \"artifacts\\cfd-acceptance\\crsa.fgcfd\"",
+      "commandLineArgs": "view \"artifacts\\cfd-acceptance\\crsa-transient.fgcfd\"",
       "workingDirectory": "..\\"
     }
   }

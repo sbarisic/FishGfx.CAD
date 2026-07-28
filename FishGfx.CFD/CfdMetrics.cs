@@ -4,6 +4,91 @@ public sealed record CfdBoundaryPatch(string Name, string Role, LegacyVtkDataSet
 
 public static class CfdMetrics
 {
+	public static (CfdTransientFrameMetric Metric, CfdTransientFluxSample Flux) CalculateTransientFrame(
+		int frameIndex,
+		double timeSeconds,
+		double crankAngleDegrees,
+		IReadOnlyList<CfdBoundaryPatch> patches,
+		CfdFluidPreset fluid,
+		double minimumMassFlowKgPerSecond,
+		IReadOnlySet<string>? nominallyClosedInletPatches = null)
+	{
+		fluid.Validate();
+		FluxIntegral inlet = patches.Where(patch => patch.Role == "inlet")
+			.Select(patch => IntegrateFlux(patch.Data, -1, fluid)).Aggregate(Add);
+		FluxIntegral outlet = IntegrateFlux(patches.Single(patch => patch.Role == "outlet").Data, 1, fluid);
+		CfdTransientMetricState state = CfdTransientMetricCalculator.Classify(
+			inlet.NetMassFlow,
+			outlet.NetMassFlow,
+			minimumMassFlowKgPerSecond);
+		double inletP0 = Math.Abs(inlet.NetMassFlow) > double.Epsilon
+			? inlet.TotalPressureFlux / inlet.NetMassFlow : 0;
+		double outletP0 = Math.Abs(outlet.NetMassFlow) > double.Epsilon
+			? outlet.TotalPressureFlux / outlet.NetMassFlow : 0;
+		double? pressureLoss = state == CfdTransientMetricState.Valid ? inletP0 - outletP0 : null;
+		double inletGross = Math.Abs(inlet.NetMassFlow) + 2 * inlet.ReverseMassFlow;
+		double outletGross = Math.Abs(outlet.NetMassFlow) + 2 * outlet.ReverseMassFlow;
+		ClosedInletMotion closedMotion = IntegrateClosedInletMotion(
+			patches,
+			nominallyClosedInletPatches ?? new HashSet<string>(StringComparer.Ordinal));
+		return (
+			new CfdTransientFrameMetric
+			{
+				FrameIndex = frameIndex,
+				TimeSeconds = timeSeconds,
+				CrankAngleDegrees = crankAngleDegrees,
+				State = state,
+				NetInletMassFlowKgPerSecond = inlet.NetMassFlow,
+				NetOutletMassFlowKgPerSecond = outlet.NetMassFlow,
+				PressureLossPa = pressureLoss,
+				LocalInletBackflowFraction = inletGross > 0 ? inlet.ReverseMassFlow / inletGross : 0,
+				OutletBackflowFraction = outletGross > 0 ? outlet.ReverseMassFlow / outletGross : 0,
+				NominallyClosedInletCount = closedMotion.Count,
+				NominallyClosedReverseFlowAreaFraction = closedMotion.TotalArea > 0
+					? closedMotion.ReverseFlowArea / closedMotion.TotalArea : 0,
+				NominallyClosedTangentialVelocityAreaWeightedMeanMps = closedMotion.TotalArea > 0
+					? closedMotion.TangentialVelocityArea / closedMotion.TotalArea : 0,
+			},
+			new CfdTransientFluxSample(
+				timeSeconds,
+				inlet.NetMassFlow,
+				outlet.NetMassFlow,
+				inletP0,
+				outletP0));
+	}
+
+	private static ClosedInletMotion IntegrateClosedInletMotion(
+		IReadOnlyList<CfdBoundaryPatch> patches,
+		IReadOnlySet<string> closedPatchNames)
+	{
+		double totalArea = 0;
+		double reverseArea = 0;
+		double tangentialVelocityArea = 0;
+		int count = 0;
+		foreach (CfdBoundaryPatch patch in patches.Where(value =>
+			value.Role == "inlet" && closedPatchNames.Contains(value.Name)))
+		{
+			++count;
+			for (int index = 0; index < patch.Data.Cells.Length; ++index)
+			{
+				(VtkVector areaVector, double area) = AreaVector(patch.Data, patch.Data.Cells[index]);
+				if (!(area > 0)) throw new InvalidDataException("A nominally closed inlet face has zero area.");
+				VtkVector velocity = Vector(patch.Data, "U", index);
+				double normalVelocity = velocity.Dot(areaVector) / area;
+				double tangentialX = velocity.X - areaVector.X / area * normalVelocity;
+				double tangentialY = velocity.Y - areaVector.Y / area * normalVelocity;
+				double tangentialZ = velocity.Z - areaVector.Z / area * normalVelocity;
+				totalArea += area;
+				if (normalVelocity > 0) reverseArea += area;
+				tangentialVelocityArea += Math.Sqrt(
+					tangentialX * tangentialX
+					+ tangentialY * tangentialY
+					+ tangentialZ * tangentialZ) * area;
+			}
+		}
+		return new(count, totalArea, reverseArea, tangentialVelocityArea);
+	}
+
 	public static CfdResultSummary Calculate(
 		IReadOnlyList<CfdBoundaryPatch> patches,
 		CfdFluidPreset fluid,
@@ -163,6 +248,11 @@ public static class CfdMetrics
 		double NetMassFlow,
 		double ReverseMassFlow,
 		double TotalPressureFlux);
+	private readonly record struct ClosedInletMotion(
+		int Count,
+		double TotalArea,
+		double ReverseFlowArea,
+		double TangentialVelocityArea);
 	private sealed record YPlusStatistics(
 		double Minimum,
 		double Mean,

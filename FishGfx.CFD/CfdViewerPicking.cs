@@ -216,7 +216,7 @@ internal sealed partial class CfdViewerApplication
 			"Mesh" => "Gas-wall surface mesh; click to sample data",
 			"Slice" => $"Mid-Z volume samples at {slicePlane * 1000:F1} mm",
 			"Velocity" => "Velocity vectors; arrow length follows speed",
-			"Streamlines" => $"{streamlines.Count} inlet-seeded paths through U",
+			"Streamlines" => StreamlineDescription(),
 			_ => mode,
 		};
 		string scaleDescription = mode switch
@@ -234,6 +234,13 @@ internal sealed partial class CfdViewerApplication
 		bool hasRange = hasValues && (mode == "Slice"
 			? TryRange(values, slicePointIndices, out minimum, out maximum)
 			: TryRange(values, out minimum, out maximum));
+		string association = mode is "Slice" or "Velocity" or "Streamlines" ? "volume" : "walls";
+		CfdFieldRange? globalRange = GlobalRange(effectiveField, association);
+		if (hasRange && globalRange != null)
+		{
+			minimum = globalRange.Minimum;
+			maximum = globalRange.Maximum;
+		}
 		string unavailable = data == null
 			? "No CFD result data is loaded."
 			: $"{descriptor.Name} is unavailable for this mode.";
@@ -253,6 +260,14 @@ internal sealed partial class CfdViewerApplication
 	}
 
 	private string EffectiveField => mode is "Velocity" or "Streamlines" ? "U" : this.field;
+
+	private string StreamlineDescription()
+	{
+		if (resultSequence == null || displayedStreamlineFrame == currentFrameIndex)
+			return $"{streamlines.Count} inlet-seeded paths through U";
+		CfdFrameInfo shown = resultSequence.GetFrameInfo(displayedStreamlineFrame);
+		return $"{streamlines.Count} paths from {shown.CrankAngleDegrees:F0} deg; updating for current frame";
+	}
 
 	private string FormatPosition(Vector3 position)
 	{

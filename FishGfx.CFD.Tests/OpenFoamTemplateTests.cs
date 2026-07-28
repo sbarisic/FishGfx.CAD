@@ -7,6 +7,58 @@ namespace FishGfx.CFD.Tests;
 public sealed class OpenFoamTemplateTests
 {
 	[Fact]
+	public void GeneratesTransientBackwardTemplateAndDirectionAwareInlets()
+	{
+		string directory = Path.Combine(Path.GetTempPath(), $"fishgfx-transient-foam-{Guid.NewGuid():N}");
+		Directory.CreateDirectory(directory);
+		try
+		{
+			string stl = Path.Combine(directory, "source.stl");
+			File.WriteAllText(stl, "solid walls\nendsolid walls\n");
+			GasOpeningFingerprint fingerprint = new(1000, [0, 0, 0], [0, 0, 1], 1, 100, [], [], "plane");
+			GasOpeningManifest[] openings = Enumerable.Range(1, 4)
+				.Select(index => new GasOpeningManifest($"start{index}", $"inlet_{index}", "inlet", $"runner{index}", fingerprint))
+				.Append(new("end", "outlet", "outlet", "collector", fingerprint)).ToArray();
+			GasPathManifest path = new("collector", "collector", "Collector", "component", openings);
+			GasPackageManifest manifest = new("fishgfx.gas-patches", 1, "mm", new string('0', 64),
+				CadPatchMatchingPolicy.Version1, [path]);
+			CfdEngineTransientSettings transient = new()
+			{
+				CylinderAssignments = Enumerable.Range(1, 4)
+					.Select(index => new CfdCylinderAssignment(index, $"runner{index}")).ToList(),
+			};
+			CfdCaseDocument document = new()
+			{
+				SelectedGasPathId = path.Id,
+				AnalysisMode = CfdAnalysisMode.EngineTransient,
+				EngineTransient = transient,
+			};
+			string target = Path.Combine(directory, "case");
+			OpenFoamCaseGenerator.Generate(target, document,
+				new("fixture", "", "", [], [], manifest),
+				new(stl, new(-.1, -.1, -.1), new(.1, .1, .1), new(0, 0, 0), 40));
+			Assert.Contains("default backward", File.ReadAllText(Path.Combine(target, "system", "fvSchemes")));
+			string control = File.ReadAllText(Path.Combine(target, "system", "controlDict"));
+			Assert.Contains("adjustTimeStep yes", control);
+			Assert.Contains("writeControl adjustableRunTime", control);
+			Assert.Contains("outletMassFlow", control);
+			Assert.Contains("operation sum", control);
+			Assert.Contains("outletPressure", control);
+			Assert.Contains("operation areaAverage", control);
+			Assert.Contains("domainMass", control);
+			Assert.Contains("operation volIntegrate", control);
+			Assert.Contains("purgeWrite 362", control);
+			string velocity = File.ReadAllText(Path.Combine(target, "0", "U"));
+			Assert.Contains("type table", velocity);
+			Assert.Contains("massFlowRate", velocity);
+			Assert.Contains("type inletOutlet", File.ReadAllText(Path.Combine(target, "0", "T")));
+			Assert.Contains("type turbulentKineticEnergy", File.ReadAllText(Path.Combine(target, "0", "k")));
+			Assert.Contains("type turbulentOmega", File.ReadAllText(Path.Combine(target, "0", "omega")));
+		}
+		finally { Directory.Delete(directory, true); }
+	}
+
+	[Fact]
 	public void GeneratesCompleteBoundaryMatrixAndWallOnlyLayers()
 	{
 		string directory = Path.Combine(Path.GetTempPath(), $"fishgfx-foam-{Guid.NewGuid():N}");

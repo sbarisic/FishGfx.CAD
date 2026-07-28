@@ -21,9 +21,19 @@ internal sealed partial class CfdViewerApplication : IDisposable
 	private RenderTarget? sceneTarget;
 	private readonly List<VelocityArrow> arrows = [];
 	private readonly List<CfdStreamline> streamlines = [];
+	private readonly CfdStreamlineCache streamlineCache = new();
+	private CfdSpatialSampleIndex? spatialSampleIndex;
+	private IReadOnlyList<Vector3> streamlineSeeds = [];
+	private Task<CfdStreamlineResult>? pendingStreamlineLoad;
+	private CancellationTokenSource? streamlineLoadCancellation;
+	private int streamlineDueFrame = -1;
+	private string streamlineDueChecksum = string.Empty;
+	private long streamlineDueTimestamp;
+	private int displayedStreamlineFrame;
 	private readonly CfdViewerUi ui;
-	private readonly LegacyVtkDataSet? volume;
-	private readonly LegacyVtkDataSet? walls;
+	private readonly ICfdResultSequence? resultSequence;
+	private LegacyVtkDataSet? volume;
+	private LegacyVtkDataSet? walls;
 	private readonly Vector3[] surfaceVertices = [];
 	private readonly Vector3[] surfaceNormals = [];
 	private readonly uint[] surfaceIndices = [];
@@ -45,14 +55,52 @@ internal sealed partial class CfdViewerApplication : IDisposable
 	private float orbitPitch;
 	private Vector2 previousOrbitMouse;
 	private bool orbiting;
+	private int currentFrameIndex;
+	private int requestedFrameIndex;
+	private Task<CfdResultFrame>? pendingFrameLoad;
+	private CancellationTokenSource? frameLoadCancellation;
+	private bool playing;
+	private double playbackAccumulator;
 	private bool disposed;
 
 	internal CfdViewerApplication(
 		CadTessellation? tessellation,
 		VerifiedOpenFoamResults? results = null,
 		CfdResultSummary? summary = null)
+		: this(
+			tessellation,
+			results == null ? null : new CfdSteadyResultSequence(results),
+			summary)
 	{
-		window = new RenderWindow(1280, 800, "FishGfx.CFD — Steady Compressible Results", true);
+	}
+
+	internal CfdViewerApplication(
+		ICfdResultSequence sequence,
+		CfdResultSummary? summary = null,
+		CfdEngineTransientSettings? transient = null,
+		CfdTransientResultReference? transientResult = null,
+		CfdTransientResultSummary? transientSummary = null)
+		: this(null, sequence, summary, transient, transientResult, transientSummary)
+	{
+	}
+
+	private CfdViewerApplication(
+		CadTessellation? tessellation,
+		ICfdResultSequence? sequence,
+		CfdResultSummary? summary,
+		CfdEngineTransientSettings? transient = null,
+		CfdTransientResultReference? transientResult = null,
+		CfdTransientResultSummary? transientSummary = null)
+	{
+		resultSequence = sequence;
+		VerifiedOpenFoamResults? results = sequence?.LoadFrameAsync(0, CancellationToken.None)
+			.AsTask().GetAwaiter().GetResult().Results;
+		string title = sequence == null
+			? "FishGfx.CFD — Published Gas Geometry"
+			: sequence.AnalysisMode == CfdAnalysisMode.EngineTransient
+				? "FishGfx.CFD — Engine Transient Results"
+				: "FishGfx.CFD — Steady Compressible Results";
+		window = new RenderWindow(1280, 800, title, true);
 		uiCamera.SetOrthogonal(0, 0, window.Width, window.Height);
 		window.Resized += (_, args) => uiCamera.SetOrthogonal(0, 0, args.Width, args.Height);
 		input = new InputManager(window);
@@ -72,7 +120,8 @@ internal sealed partial class CfdViewerApplication : IDisposable
 		}
 		if (surfaceVertices.Length > 0)
 		{
-			surface = CreateMesh(surfaceVertices, surfaceNormals, surfaceIndices, FieldColors(walls, field, surfaceVertices.Length));
+			surface = CreateMesh(surfaceVertices, surfaceNormals, surfaceIndices,
+				FieldColors(walls, field, surfaceVertices.Length, "walls"));
 			wireframe = CreateMesh(
 				surfaceVertices,
 				surfaceNormals,
@@ -91,10 +140,14 @@ internal sealed partial class CfdViewerApplication : IDisposable
 			slice.PrimitiveType = PrimitiveType.Points;
 			BuildSlice();
 			BuildArrows();
-			BuildStreamlines(results?.Boundaries.Where(item => item.Role == "inlet").ToArray() ?? []);
+			spatialSampleIndex = new(volume.Points);
+			streamlineSeeds = (results?.Boundaries.Where(item => item.Role == "inlet") ?? [])
+				.OrderBy(item => item.Name, StringComparer.Ordinal)
+				.SelectMany(item => SelectInletSeeds(item.Data, 5)).ToArray();
+			ScheduleStreamlines(0, sequence?.GetFrameInfo(0).VelocityBlockChecksum ?? "steady", true);
 		}
 		FitCamera();
-		ui = new CfdViewerUi(window, summary, Fields);
+		ui = new CfdViewerUi(window, summary, Fields, sequence, transient, transientResult, transientSummary);
 		ui.ModeRequested += mode =>
 		{
 			this.mode = mode;
@@ -104,17 +157,27 @@ internal sealed partial class CfdViewerApplication : IDisposable
 			showArrows = mode == "Velocity";
 			showStreamlines = mode == "Streamlines";
 			pickedValue = null;
+			if (showStreamlines && resultSequence != null)
+				ScheduleStreamlines(currentFrameIndex, resultSequence.GetFrameInfo(currentFrameIndex).VelocityBlockChecksum, true);
 			RefreshLegend();
 		};
 		ui.FieldRequested += selected =>
 		{
 			field = selected;
-			if (surface != null) surface.SetColors(FieldColors(walls, field, surfaceVertices.Length));
+			if (surface != null) surface.SetColors(FieldColors(walls, field, surfaceVertices.Length, "walls"));
 			BuildSlice();
 			pickedValue = null;
 			RefreshLegend();
 		};
+		ui.FrameRequested += RequestFrame;
+		ui.PlayPauseRequested += () => playing = !playing;
+		ui.StepRequested += amount =>
+		{
+			playing = false;
+			RequestFrame(WrapFrame(currentFrameIndex + amount));
+		};
 		RefreshLegend();
+		UpdateTimeline(false);
 	}
 
 	internal void Run()
@@ -132,6 +195,7 @@ internal sealed partial class CfdViewerApplication : IDisposable
 			window.PollEvents();
 			UpdateCameraInteraction();
 			UpdatePickingInteraction();
+			UpdateResultSequence(1f / 60f);
 			ui.Update(1f / 60f, (float)timing.Elapsed.TotalSeconds);
 			EnsureSceneTarget();
 			using RenderFrame frame = window.Graphics.BeginFrame();
@@ -221,6 +285,138 @@ internal sealed partial class CfdViewerApplication : IDisposable
 				automaticComplete = true;
 			}
 		}
+	}
+
+	private void UpdateResultSequence(float deltaTime)
+	{
+		UpdateStreamlines();
+		if (resultSequence == null || resultSequence.FrameCount <= 1) return;
+		if (pendingFrameLoad is { IsCompleted: true } pending)
+		{
+			pendingFrameLoad = null;
+			if (pending.IsCompletedSuccessfully)
+			{
+				CfdResultFrame frame = pending.Result;
+				CfdFrameInfo requested = resultSequence.GetFrameInfo(requestedFrameIndex);
+				if (frame.Info.Index == requestedFrameIndex
+					&& frame.Info.VelocityBlockChecksum == requested.VelocityBlockChecksum)
+				{
+					ApplyFrame(frame);
+				}
+			}
+			else if (!pending.IsCanceled)
+			{
+				throw pending.Exception?.GetBaseException() ?? new InvalidDataException("A CFD frame load failed.");
+			}
+		}
+		if (!playing || pendingFrameLoad != null) return;
+		playbackAccumulator += deltaTime;
+		const double frameInterval = 1.0 / 30.0;
+		if (playbackAccumulator >= frameInterval)
+		{
+			playbackAccumulator %= frameInterval;
+			RequestFrame(WrapFrame(currentFrameIndex + 1));
+		}
+	}
+
+	private void RequestFrame(int index)
+	{
+		if (resultSequence == null || resultSequence.FrameCount <= 1) return;
+		index = WrapFrame(index);
+		if (index == currentFrameIndex && pendingFrameLoad == null) return;
+		frameLoadCancellation?.Cancel();
+		frameLoadCancellation?.Dispose();
+		frameLoadCancellation = new CancellationTokenSource();
+		requestedFrameIndex = index;
+		pendingFrameLoad = resultSequence.LoadFrameAsync(index, frameLoadCancellation.Token).AsTask();
+		UpdateTimeline(true);
+	}
+
+	private void ApplyFrame(CfdResultFrame frame)
+	{
+		volume = frame.Results.Volume;
+		walls = frame.Results.Boundaries.FirstOrDefault(value => value.Role == "walls")?.Data;
+		if (surface != null) surface.SetColors(FieldColors(walls, field, surfaceVertices.Length, "walls"));
+		BuildSlice();
+		arrows.Clear();
+		BuildArrows();
+		currentFrameIndex = frame.Info.Index;
+		ScheduleStreamlines(frame.Info.Index, frame.Info.VelocityBlockChecksum, !playing);
+		pickedValue = null;
+		RefreshLegend();
+		UpdateTimeline(false);
+	}
+
+	private void ScheduleStreamlines(int frame, string checksum, bool exact)
+	{
+		if (spatialSampleIndex == null || volume == null || !volume.PointVectors.ContainsKey("U")) return;
+		if (!exact && frame % 10 != 0) return;
+		if (streamlineCache.TryGet(frame, checksum, out CfdStreamline[] cached))
+		{
+			streamlines.Clear();
+			streamlines.AddRange(cached);
+			displayedStreamlineFrame = frame;
+			return;
+		}
+		if (pendingStreamlineLoad != null)
+			streamlineLoadCancellation?.Cancel();
+		streamlineDueFrame = frame;
+		streamlineDueChecksum = checksum;
+		streamlineDueTimestamp = Stopwatch.GetTimestamp() + (exact
+			? (long)(Stopwatch.Frequency * 0.15)
+			: 0);
+	}
+
+	private void UpdateStreamlines()
+	{
+		if (pendingStreamlineLoad is { IsCompleted: true } pending)
+		{
+			pendingStreamlineLoad = null;
+			if (pending.IsCompletedSuccessfully)
+			{
+				CfdStreamlineResult result = pending.Result;
+				streamlineCache.Add(result);
+				if (resultSequence != null)
+				{
+					CfdFrameInfo active = resultSequence.GetFrameInfo(currentFrameIndex);
+					if (result.FrameIndex == active.Index && result.VelocityChecksum == active.VelocityBlockChecksum)
+					{
+						streamlines.Clear();
+						streamlines.AddRange(result.Lines);
+						displayedStreamlineFrame = result.FrameIndex;
+						RefreshLegend();
+					}
+				}
+			}
+			else if (!pending.IsCanceled) throw pending.Exception?.GetBaseException()
+				?? new InvalidDataException("Streamline generation failed.");
+		}
+		if (pendingStreamlineLoad != null || streamlineDueFrame < 0 || Stopwatch.GetTimestamp() < streamlineDueTimestamp) return;
+		if (volume == null || spatialSampleIndex == null || !volume.PointVectors.TryGetValue("U", out VtkVector[]? velocities)) return;
+		int frame = streamlineDueFrame;
+		string checksum = streamlineDueChecksum;
+		streamlineDueFrame = -1;
+		streamlineLoadCancellation?.Cancel();
+		streamlineLoadCancellation?.Dispose();
+		streamlineLoadCancellation = new();
+		CancellationToken token = streamlineLoadCancellation.Token;
+		pendingStreamlineLoad = Task.Run(() => new CfdStreamlineResult(
+			frame,
+			checksum,
+			CfdStreamlineTracer.Trace(spatialSampleIndex, velocities, streamlineSeeds, token)), token);
+	}
+
+	private int WrapFrame(int index)
+	{
+		int count = resultSequence?.FrameCount ?? 1;
+		int result = index % count;
+		return result < 0 ? result + count : result;
+	}
+
+	private void UpdateTimeline(bool loading)
+	{
+		if (resultSequence == null) return;
+		ui.SetTimeline(resultSequence.GetFrameInfo(currentFrameIndex), playing, loading);
 	}
 
 	private Mesh3D CreateMesh(Vector3[] vertices, Vector3[] normals, uint[] indices, Color[] colors)
@@ -319,14 +515,17 @@ internal sealed partial class CfdViewerApplication : IDisposable
 		Vector3[] points = slicePointIndices.Select(index => Point(volume.Points[index])).ToArray();
 		slicePointCount = points.Length;
 		slice.SetVertices(points);
-		slice.SetColors(SelectedPointColors(volume, field, selected));
+		slice.SetColors(SelectedPointColors(volume, field, selected, "volume"));
 		slice.SetElements([]);
 	}
 
 	private void BuildArrows()
 	{
 		if (volume == null || !volume.PointVectors.TryGetValue("U", out VtkVector[]? velocity)) return;
-		double maximum = velocity.Max(item => item.Length);
+		double maximum = resultSequence is ICfdFieldRangeProvider ranges
+			&& ranges.TryGetRange("U", "volume", out CfdFieldRange cycleRange)
+			? cycleRange.Maximum
+			: velocity.Max(item => item.Length);
 		if (!(maximum > 0)) return;
 		velocityMaximum = maximum;
 		Vector3 minimum = new(
@@ -398,17 +597,25 @@ internal sealed partial class CfdViewerApplication : IDisposable
 		return (vertices, normals, indices.ToArray());
 	}
 
-	private static Color[] FieldColors(LegacyVtkDataSet? data, string name, int count)
+	private Color[] FieldColors(
+		LegacyVtkDataSet? data,
+		string name,
+		int count,
+		string association)
 	{
 		if (data == null) return Enumerable.Repeat(new Color(70, 165, 220), count).ToArray();
 		double[] values = PointValues(data, name);
-		return Colors(values, count);
+		return Colors(values, count, GlobalRange(name, association));
 	}
 
-	private static Color[] SelectedPointColors(LegacyVtkDataSet data, string name, List<int> selected)
+	private Color[] SelectedPointColors(
+		LegacyVtkDataSet data,
+		string name,
+		List<int> selected,
+		string association)
 	{
 		double[] all = PointValues(data, name);
-		return Colors(selected.Select(index => all[index]).ToArray(), selected.Count);
+		return Colors(selected.Select(index => all[index]).ToArray(), selected.Count, GlobalRange(name, association));
 	}
 
 	private static double[] PointValues(LegacyVtkDataSet data, string name)
@@ -419,11 +626,11 @@ internal sealed partial class CfdViewerApplication : IDisposable
 		return new double[data.Points.Length];
 	}
 
-	private static Color[] Colors(double[] values, int count)
+	private static Color[] Colors(double[] values, int count, CfdFieldRange? fixedRange)
 	{
 		if (values.Length == 0) return [];
-		double minimum = values.Where(double.IsFinite).DefaultIfEmpty(0).Min();
-		double maximum = values.Where(double.IsFinite).DefaultIfEmpty(1).Max();
+		double minimum = fixedRange?.Minimum ?? values.Where(double.IsFinite).DefaultIfEmpty(0).Min();
+		double maximum = fixedRange?.Maximum ?? values.Where(double.IsFinite).DefaultIfEmpty(1).Max();
 		double range = Math.Max(maximum - minimum, double.Epsilon);
 		return Enumerable.Range(0, count).Select(index =>
 		{
@@ -431,6 +638,12 @@ internal sealed partial class CfdViewerApplication : IDisposable
 			return FieldColor(t);
 		}).ToArray();
 	}
+
+	private CfdFieldRange? GlobalRange(string name, string association) =>
+		resultSequence is ICfdFieldRangeProvider provider
+		&& provider.TryGetRange(name, association, out CfdFieldRange range)
+			? range
+			: null;
 
 	private static Color FieldColor(double normalized)
 	{
@@ -479,6 +692,10 @@ internal sealed partial class CfdViewerApplication : IDisposable
 	{
 		if (disposed) return;
 		disposed = true;
+		frameLoadCancellation?.Cancel();
+		frameLoadCancellation?.Dispose();
+		streamlineLoadCancellation?.Cancel();
+		streamlineLoadCancellation?.Dispose();
 		ui.Dispose();
 		surface?.Dispose();
 		wireframe?.Dispose();

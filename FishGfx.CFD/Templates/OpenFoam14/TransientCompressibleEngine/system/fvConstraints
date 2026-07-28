@@ -1,0 +1,6 @@
+FoamFile { format ascii; class dictionary; location "system"; object fvConstraints; }
+
+// Keep the ideal-gas enthalpy inversion inside its supported temperature range
+// during the startup pressure wave. This is the Foundation 14 limitTemperature
+// constraint used by its compressible-fluid tutorials.
+#includeConstraint limitTemperature(min=200, max=2500)

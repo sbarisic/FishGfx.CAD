@@ -15,7 +15,15 @@ public sealed record CfdPreparedGeometry(
 public static class OpenFoamCaseGenerator
 {
 	public const string TemplateVersion = "openfoam14-steady-compressible-7";
-	public const int PostProcessingVersion = 1;
+	public const string TransientTemplateVersion = "openfoam14-transient-engine-5";
+	public const int PostProcessingVersion = 2;
+
+	public static string TemplateVersionFor(CfdAnalysisMode mode) => mode switch
+	{
+		CfdAnalysisMode.Steady => TemplateVersion,
+		CfdAnalysisMode.EngineTransient => TransientTemplateVersion,
+		_ => throw new ArgumentOutOfRangeException(nameof(mode)),
+	};
 
 	public static void Generate(
 		string caseDirectory,
@@ -26,34 +34,53 @@ public static class OpenFoamCaseGenerator
 		document.Mesh.Validate();
 		document.Solver.Validate();
 		GasPathManifest path = package.Manifest.Paths.Single(item => item.Id == document.SelectedGasPathId);
-		string templateRoot = Path.Combine(
+		CfdTransientPulseSet? pulse = document.AnalysisMode == CfdAnalysisMode.EngineTransient
+			? CfdTransientPulseGenerator.Generate(document.EngineTransient!, document.Solver)
+			: null;
+		string steadyTemplateRoot = Path.Combine(
 			AppContext.BaseDirectory,
 			"Templates",
 			"OpenFoam14",
 			"SteadyCompressible");
-		if (!Directory.Exists(templateRoot))
+		string? overlayRoot = document.AnalysisMode == CfdAnalysisMode.EngineTransient
+			? Path.Combine(AppContext.BaseDirectory, "Templates", "OpenFoam14", "TransientCompressibleEngine")
+			: null;
+		if (!Directory.Exists(steadyTemplateRoot) || overlayRoot != null && !Directory.Exists(overlayRoot))
 		{
-			throw new DirectoryNotFoundException($"OpenFOAM template not found: {templateRoot}");
+			throw new DirectoryNotFoundException("The selected OpenFOAM template is missing.");
 		}
 		Directory.CreateDirectory(caseDirectory);
+		CopyTemplate(steadyTemplateRoot, caseDirectory, document, path, geometry, pulse);
+		if (overlayRoot != null) CopyTemplate(overlayRoot, caseDirectory, document, path, geometry, pulse);
+		string triSurface = Path.Combine(caseDirectory, "constant", "triSurface");
+		Directory.CreateDirectory(triSurface);
+		File.Copy(geometry.MultiRegionStlPath, Path.Combine(triSurface, "gas-domain.stl"), true);
+	}
+
+	private static void CopyTemplate(
+		string templateRoot,
+		string caseDirectory,
+		CfdCaseDocument document,
+		GasPathManifest path,
+		CfdPreparedGeometry geometry,
+		CfdTransientPulseSet? pulse)
+	{
 		foreach (string source in Directory.EnumerateFiles(templateRoot, "*", SearchOption.AllDirectories))
 		{
 			string relative = Path.GetRelativePath(templateRoot, source);
 			string destination = Path.Combine(caseDirectory, relative);
 			Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
 			string content = File.ReadAllText(source);
-			File.WriteAllText(destination, Substitute(content, document, path, geometry), new UTF8Encoding(false));
+			File.WriteAllText(destination, Substitute(content, document, path, geometry, pulse), new UTF8Encoding(false));
 		}
-		string triSurface = Path.Combine(caseDirectory, "constant", "triSurface");
-		Directory.CreateDirectory(triSurface);
-		File.Copy(geometry.MultiRegionStlPath, Path.Combine(triSurface, "gas-domain.stl"), true);
 	}
 
 	private static string Substitute(
 		string content,
 		CfdCaseDocument document,
 		GasPathManifest path,
-		CfdPreparedGeometry geometry)
+		CfdPreparedGeometry geometry,
+		CfdTransientPulseSet? pulse)
 	{
 		CfdMeshSettings mesh = document.Mesh;
 		CfdSolverSettings solver = document.Solver;
@@ -95,14 +122,26 @@ public static class OpenFoamCaseGenerator
 			["FIRST_LAYER_METERS"] = F(mesh.FirstLayerThicknessMm / 1000.0),
 			["PATCH_REGIONS"] = PatchRegions(path, mesh),
 			["LAYERS"] = mesh.LayerCount == 0 ? string.Empty : $"{MeshPatchName("walls")} {{ nSurfaceLayers {mesh.LayerCount}; }}",
-			["U_BOUNDARIES"] = Boundaries(path, document, "U"),
-			["P_BOUNDARIES"] = Boundaries(path, document, "p"),
-			["T_BOUNDARIES"] = Boundaries(path, document, "T"),
-			["K_BOUNDARIES"] = Boundaries(path, document, "k"),
-			["OMEGA_BOUNDARIES"] = Boundaries(path, document, "omega"),
-			["NUT_BOUNDARIES"] = Boundaries(path, document, "nut"),
-			["ALPHAT_BOUNDARIES"] = Boundaries(path, document, "alphat"),
+			["U_BOUNDARIES"] = Boundaries(path, document, "U", pulse),
+			["P_BOUNDARIES"] = Boundaries(path, document, "p", pulse),
+			["T_BOUNDARIES"] = Boundaries(path, document, "T", pulse),
+			["K_BOUNDARIES"] = Boundaries(path, document, "k", pulse),
+			["OMEGA_BOUNDARIES"] = Boundaries(path, document, "omega", pulse),
+			["NUT_BOUNDARIES"] = Boundaries(path, document, "nut", pulse),
+			["ALPHAT_BOUNDARIES"] = Boundaries(path, document, "alphat", pulse),
 		};
+		if (document.AnalysisMode == CfdAnalysisMode.EngineTransient)
+		{
+			CfdEngineTransientSettings transient = document.EngineTransient!;
+			values["END_TIME"] = F(transient.MaximumCycles * transient.CycleDurationSeconds);
+			values["INITIAL_DELTA_T"] = F(transient.MaximumTimeStepDegrees * transient.SecondsPerDegree);
+			values["MAX_DELTA_T"] = F(transient.MaximumTimeStepDegrees * transient.SecondsPerDegree);
+			values["WRITE_INTERVAL"] = F(transient.SolverAlignmentDegrees * transient.SecondsPerDegree);
+			values["MAX_CO"] = F(transient.MaximumCourantNumber);
+			values["CYCLE_DURATION"] = F(transient.CycleDurationSeconds);
+			values["PURGE_WRITE"] = I(checked((int)Math.Round(720.0 / transient.SolverAlignmentDegrees)) + 2);
+			values["TRANSIENT_FUNCTIONS"] = TransientFunctions(path);
+		}
 		foreach ((string key, string value) in values)
 		{
 			content = content.Replace("{{" + key + "}}", value, StringComparison.Ordinal);
@@ -143,7 +182,11 @@ public static class OpenFoamCaseGenerator
 		return result.ToString();
 	}
 
-	private static string Boundaries(GasPathManifest path, CfdCaseDocument document, string field)
+	private static string Boundaries(
+		GasPathManifest path,
+		CfdCaseDocument document,
+		string field,
+		CfdTransientPulseSet? pulse)
 	{
 		StringBuilder result = new();
 		result.Append(MeshPatchName("walls")).Append("\n{\n")
@@ -154,8 +197,9 @@ public static class OpenFoamCaseGenerator
 		{
 			double massFlow = document.Solver.RunnerMassFlows.TryGetValue(inlet.ComponentId, out double configured)
 				? configured : equalFlow;
+			CfdCylinderPulseTable? cylinderPulse = pulse?.Cylinders.Single(value => value.ComponentId == inlet.ComponentId);
 			result.Append(MeshPatchName(inlet.PatchName)).Append("\n{\n")
-				.Append(InletBoundary(field, document, inlet, massFlow)).Append("}\n");
+				.Append(InletBoundary(field, document, inlet, massFlow, cylinderPulse)).Append("}\n");
 		}
 		GasOpeningManifest outlet = path.Openings.Single(item => item.Role == "outlet");
 		result.Append(MeshPatchName(outlet.PatchName)).Append("\n{\n")
@@ -180,7 +224,8 @@ public static class OpenFoamCaseGenerator
 		string field,
 		CfdCaseDocument document,
 		GasOpeningManifest inlet,
-		double massFlow)
+		double massFlow,
+		CfdCylinderPulseTable? pulse)
 	{
 		double areaM2 = inlet.Fingerprint.Area * 1e-6;
 		double rhoGuess = document.Solver.OutletPressurePa
@@ -190,6 +235,19 @@ public static class OpenFoamCaseGenerator
 		double k = 1.5 * Math.Pow(document.Solver.TurbulenceIntensity * speed, 2);
 		double length = document.Solver.MixingLengthFraction * hydraulicDiameterM;
 		double omega = Math.Sqrt(k) / (Math.Pow(0.09, 0.25) * length);
+		if (pulse != null)
+		{
+			return field switch
+			{
+				"U" => $"    type flowRateInletVelocity;\n    massFlowRate\n    {CfdTransientPulseGenerator.OpenFoamTable(pulse.MassFlow)};\n    rho rho;\n    rhoInlet {F(rhoGuess)};\n    value uniform (0 0 0);\n",
+				"p" => "    type zeroGradient;\n",
+				"T" => $"    type inletOutlet;\n    inletValue uniform {F(document.Solver.InletTemperatureK)};\n    value uniform {F(document.Solver.InletTemperatureK)};\n",
+				"k" => $"    type turbulentKineticEnergy;\n    intensity {F(document.Solver.TurbulenceIntensity)};\n    value uniform {F(k)};\n",
+				"omega" => $"    type turbulentOmega;\n    mixingLength {F(length)};\n    value uniform {F(omega)};\n",
+				"nut" or "alphat" => "    type calculated;\n    value uniform 0;\n",
+				_ => throw new ArgumentOutOfRangeException(nameof(field)),
+			};
+		}
 		return field switch
 		{
 			"U" => $"    type flowRateInletVelocity;\n    massFlowRate constant {F(massFlow)};\n    rhoInlet {F(rhoGuess)};\n    value uniform (0 0 0);\n",
@@ -212,6 +270,47 @@ public static class OpenFoamCaseGenerator
 		"nut" or "alphat" => "    type calculated;\n    value uniform 0;\n",
 		_ => throw new ArgumentOutOfRangeException(nameof(field)),
 	};
+
+	private static string TransientFunctions(GasPathManifest path)
+	{
+		GasOpeningManifest outlet = path.Openings.Single(item => item.Role == "outlet");
+		string patch = MeshPatchName(outlet.PatchName);
+		return $$"""
+			outletMassFlow
+			{
+			    type surfaceFieldValue;
+			    libs ("libfieldFunctionObjects.so");
+			    writeControl timeStep;
+			    writeInterval 1;
+			    writeFields false;
+			    patch {{patch}};
+			    fields (phi);
+			    operation sum;
+			}
+			outletPressure
+			{
+			    type surfaceFieldValue;
+			    libs ("libfieldFunctionObjects.so");
+			    writeControl timeStep;
+			    writeInterval 1;
+			    writeFields false;
+			    patch {{patch}};
+			    fields (p);
+			    operation areaAverage;
+			}
+			domainMass
+			{
+			    type volFieldValue;
+			    libs ("libfieldFunctionObjects.so");
+			    writeControl timeStep;
+			    writeInterval 1;
+			    writeFields false;
+			    cellZone all;
+			    fields (rho);
+			    operation volIntegrate;
+			}
+			""";
+	}
 
 	private static string F(double value) => value.ToString("R", CultureInfo.InvariantCulture);
 	private static string I(int value) => value.ToString(CultureInfo.InvariantCulture);

@@ -11,7 +11,7 @@ internal static class Program
 		{
 			if (args.Length == 0)
 			{
-				using CfdViewerApplication viewer = new(null);
+				using CfdViewerApplication viewer = new((FishGfx.Cad.CadTessellation?)null);
 				viewer.Run();
 				return 0;
 			}
@@ -19,8 +19,10 @@ internal static class Program
 			{
 				"inspect" when args.Length == 2 => Inspect(args[1]),
 				"create" when args.Length is 3 or 4 => Create(args[1], args[2], args.Length == 4 ? args[3] : null),
+				"create-transient" when args.Length >= 3 => CreateTransient(args),
 				"prepare" when args.Length == 2 => await Prepare(args[1]),
 				"run" when args.Length == 2 => await Run(args[1]),
+				"run-view" when args.Length == 2 => await RunAndView(args[1]),
 				"view" when args.Length is 2 or 3 => View(args[1], args.Length == 3 ? args[2] : null),
 				_ => Usage(),
 			};
@@ -30,6 +32,83 @@ internal static class Program
 			Console.Error.WriteLine(exception);
 			return 1;
 		}
+	}
+
+	private static int CreateTransient(string[] args)
+	{
+		string packagePath = args[1];
+		string casePath = args[2];
+		string preset = CfdEngineTransientSettings.CorsaPresetId;
+		string? steadyCasePath = null;
+		for (int index = 3; index < args.Length; ++index)
+		{
+			if (args[index] == "--preset" && index + 1 < args.Length) preset = args[++index];
+			else if (args[index] == "--initial-steady" && index + 1 < args.Length) steadyCasePath = args[++index];
+			else throw new ArgumentException($"Unknown create-transient argument '{args[index]}'.");
+		}
+		if (!string.Equals(preset, CfdEngineTransientSettings.CorsaPresetId, StringComparison.Ordinal))
+			throw new ArgumentException($"Unsupported transient preset '{preset}'.");
+		LoadedGasPackage package = GasPackageReader.Load(packagePath);
+		GasPathManifest path = package.Manifest.Paths.SingleOrDefault(value => value.Kind == "collector")
+			?? package.Manifest.Paths[0];
+		GasOpeningManifest[] inlets = path.Openings.Where(value => value.Role == "inlet")
+			.OrderByDescending(value => value.Fingerprint.Centroid[0]).ToArray();
+		if (inlets.Length != 4)
+			throw new InvalidDataException("The Corsa transient preset requires exactly four inlet openings.");
+		string? steadyHash = null;
+		Guid? steadyCaseId = null;
+		CfdCaseDocument? steadyInitialization = null;
+		if (steadyCasePath != null)
+		{
+			CfdCaseDocument steady = CfdCaseStore.Load(steadyCasePath);
+			if (steady.AnalysisMode != CfdAnalysisMode.Steady
+				|| steady.Results.Steady == null
+				|| string.IsNullOrWhiteSpace(steady.SolveHash))
+				throw new InvalidDataException("The initialization case is not a completed compatible steady case.");
+			if (steady.PackageFileHash != package.PackageFileHash
+				|| steady.SourceHash != package.ComputeSourceHash(path.Id)
+				|| steady.SelectedGasPathId != path.Id
+				|| steady.Solver.TotalMassFlowKgPerSecond != 0.1
+				|| steady.Solver.InletTemperatureK != 900
+				|| steady.Solver.OutletPressurePa != 101325)
+				throw new InvalidDataException("The steady initialization case is incompatible with the Corsa source and operating point.");
+			steadyHash = steady.SolveHash;
+			steadyCaseId = steady.CaseId;
+			steadyInitialization = steady;
+		}
+		CfdEngineTransientSettings transient = new()
+		{
+			CylinderAssignments = inlets.Select((opening, index) =>
+				new CfdCylinderAssignment(index + 1, opening.ComponentId)).ToList(),
+			InitialisationMode = steadyHash == null
+				? TransientInitialisationMode.Uniform
+				: TransientInitialisationMode.CompatibleSteadyResult,
+			InitialSteadySolveHash = steadyHash,
+			InitialSteadyCaseId = steadyCaseId,
+		};
+		transient.ValidateAgainst(path);
+		double diameter = inlets.Min(value => 2 * Math.Sqrt(value.Fingerprint.Area / Math.PI));
+		string fullCase = Path.GetFullPath(casePath);
+		string relative = Path.GetRelativePath(Path.GetDirectoryName(fullCase)!, package.PackagePath);
+		CfdCaseDocument document = new()
+		{
+			SourcePackagePath = relative,
+			PackageFileHash = package.PackageFileHash,
+			SelectedGasPathId = path.Id,
+			SourceHash = package.ComputeSourceHash(path.Id),
+			AnalysisMode = CfdAnalysisMode.EngineTransient,
+			EngineTransient = transient,
+			Mesh = steadyInitialization?.Mesh ?? new CfdMeshSettings
+			{
+				FirstLayerThicknessMm = preset == CfdEngineTransientSettings.CorsaPresetId
+					? 0.15
+					: CfdMeshSettings.DefaultFirstLayerThickness(diameter),
+			},
+			Solver = steadyInitialization?.Solver ?? new CfdSolverSettings(),
+		};
+		CfdCaseStore.Save(fullCase, document);
+		Console.WriteLine($"Created {fullCase}");
+		return 0;
 	}
 
 	private static int Inspect(string packagePath)
@@ -84,7 +163,9 @@ internal static class Program
 	{
 		CfdCaseDocument previous = CfdCaseStore.Load(Path.GetFullPath(casePath));
 		(CfdCaseDocument document, LoadedGasPackage package, _, string work) = await PrepareCore(casePath);
-		if (previous.Results != null
+		if (document.AnalysisMode == CfdAnalysisMode.EngineTransient)
+			return await RunTransient(casePath, previous, document, package, work);
+		if (previous.Results.Steady != null
 			&& string.Equals(previous.MeshHash, document.MeshHash, StringComparison.Ordinal)
 			&& string.Equals(previous.SolveHash, document.SolveHash, StringComparison.Ordinal))
 		{
@@ -96,24 +177,25 @@ internal static class Program
 			CfdResultSummary cachedMetrics = CfdMetrics.Calculate(
 				verified.Boundaries,
 				document.Solver.Fluid,
-				previous.Results.Status);
-			CfdResultSummary enriched = previous.Results with
+				previous.Results.Steady.Status);
+			CfdResultSummary enriched = previous.Results.Steady with
 			{
-				Iterations = Math.Max(previous.Results.Iterations, ReadIterationCount(Path.Combine(work, "results", "run.log"))),
+				Iterations = Math.Max(previous.Results.Steady.Iterations, ReadIterationCount(Path.Combine(work, "results", "run.log"))),
 				DensityConsistencyMaximumRelativeError = cachedMetrics.DensityConsistencyMaximumRelativeError,
-				Residuals = previous.Results.Residuals.Count > 0
-					? previous.Results.Residuals
+				Residuals = previous.Results.Steady.Residuals.Count > 0
+					? previous.Results.Steady.Residuals
 					: ReadResiduals(Path.Combine(work, "results", "run.log")),
 			};
-			document = document with { Results = enriched };
+			document = document with { Results = document.Results with { Steady = enriched } };
 			CfdCaseStore.Save(casePath, document);
 			Console.WriteLine($"CacheHit: {document.SolveHash}");
 			return enriched.Status == CfdRunStatus.Converged ? 0 : 2;
 		}
-		WslOpenFoamEnvironment environment = await WslOpenFoamEnvironment.DetectAsync();
+		WslOpenFoamEnvironment environment = await WslOpenFoamEnvironment.DetectAsync(document.AnalysisMode);
 		WslOpenFoamRunner runner = new(environment);
 		OpenFoamRunResult result = await runner.RunAsync(
 			work,
+			document,
 			document.CaseId,
 			document.MeshHash!,
 			document.SolveHash!,
@@ -142,11 +224,220 @@ internal static class Program
 		}
 		document = document with
 		{
-			Results = summary,
+			Results = document.Results with { Steady = summary },
 		};
 		CfdCaseStore.Save(casePath, document);
 		Console.WriteLine($"{result.Status}: {result.LogPath}");
 		return result.Status == CfdRunStatus.Converged ? 0 : 2;
+	}
+
+	private static async Task<int> RunAndView(string casePath)
+	{
+		int status = await Run(casePath);
+		CfdCaseDocument document = CfdCaseStore.Load(Path.GetFullPath(casePath));
+		if (document.Results.Steady == null && document.Results.Transient == null) return status;
+		return ViewCase(casePath);
+	}
+
+	private static async Task<int> RunTransient(
+		string casePath,
+		CfdCaseDocument previous,
+		CfdCaseDocument document,
+		LoadedGasPackage package,
+		string work)
+	{
+		string fullCase = Path.GetFullPath(casePath);
+		if (previous.Results.Transient is CfdTransientResultReference cached
+			&& previous.SolveHash == document.SolveHash
+			&& previous.CaptureHash == document.CaptureHash
+			&& previous.ResultHash == document.ResultHash)
+		{
+			string cachedPath = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(fullCase)!, cached.RelativePath));
+			if (File.Exists(cachedPath))
+			{
+				using FgFlowResultSequence validation = new(cachedPath, cached.Sha256);
+				if (validation.FrameCount == cached.FrameCount)
+				{
+					Console.WriteLine($"CacheHit: {document.ResultHash}");
+					return cached.Periodicity.Passed ? 0 : 2;
+				}
+			}
+		}
+
+		string retainedResults = Path.Combine(work, "results");
+		bool reuseCapture = previous.Results.Transient != null
+			&& previous.SolveHash == document.SolveHash
+			&& Directory.Exists(Path.Combine(retainedResults, "VTK"))
+			&& Directory.Exists(Path.Combine(retainedResults, "postProcessing"));
+		OpenFoamRunResult run;
+		if (reuseCapture)
+		{
+			run = new(
+				previous.Results.Transient!.Periodicity.Passed
+					? CfdRunStatus.PeriodicConverged
+					: CfdRunStatus.MaximumCyclesWithoutPeriodicity,
+				retainedResults,
+				Path.Combine(retainedResults, "run.log"),
+				"Re-ingesting retained transient capture data without solving.",
+				previous.Results.Transient.AcceptedCycle);
+		}
+		else
+		{
+			WslOpenFoamEnvironment environment = await WslOpenFoamEnvironment.DetectAsync(document.AnalysisMode);
+			WslOpenFoamRunner runner = new(environment);
+			run = await runner.RunAsync(
+				work,
+				document,
+				document.CaseId,
+				document.MeshHash!,
+				document.SolveHash!,
+				document.Solver.RetainFailedRuntime);
+		}
+		if (run.Status is CfdRunStatus.FatalError or CfdRunStatus.Cancelled or CfdRunStatus.TimeStepCollapse)
+		{
+			document = document with
+			{
+				Results = document.Results with
+				{
+					TransientSummary = new CfdTransientResultSummary
+					{
+						Status = run.Status,
+						Diagnostic = run.Diagnostic,
+					},
+				},
+			};
+			CfdCaseStore.Save(fullCase, document);
+			return 2;
+		}
+
+		CfdEngineTransientSettings transient = document.EngineTransient!;
+		int acceptedCycle = run.AcceptedCycle ?? transient.MaximumCycles;
+		GasPathManifest path = package.Manifest.Paths.Single(value => value.Id == document.SelectedGasPathId);
+		double captureStart = (acceptedCycle - 1) * transient.CycleDurationSeconds;
+		int frameCount = checked((int)Math.Round(720.0 / document.Capture.RetainedOutputAngleDegrees));
+		IEnumerable<CfdFlowFrameSource> frames = OpenFoamResultVerifier.VerifyTransientFrames(
+			run.WindowsResultDirectory,
+			path,
+			captureStart,
+			transient.CycleDurationSeconds,
+			document.Capture.RetainedOutputAngleDegrees);
+		string resultDirectory = fullCase + ".results";
+		string resultPath = Path.Combine(resultDirectory, "transient.fgflow");
+		List<CfdTransientFrameMetric> frameMetrics = [];
+		List<CfdTransientFluxSample> fluxSamples = [];
+		string resultFileHash = FgFlowWriter.WriteStreaming(
+			resultPath,
+			document.SolveHash!,
+			document.CaptureHash!,
+			acceptedCycle,
+			frameCount,
+			CollectTransientMetrics(frames, document, path, frameMetrics, fluxSamples),
+			document.ResultStorage);
+		CfdPeriodicityResult periodicity = OpenFoamTransientMonitor.ReadAndCompareCycle(
+			run.WindowsResultDirectory,
+			transient,
+			acceptedCycle);
+		CfdRunStatus resultStatus = periodicity.Passed
+			? CfdRunStatus.PeriodicConverged
+			: CfdRunStatus.MaximumCyclesWithoutPeriodicity;
+		IReadOnlyList<CfdTransientFluxSample> closedFluxSamples = CloseCycle(
+			fluxSamples,
+			transient.CycleDurationSeconds);
+		double? cyclePressureLoss = CfdTransientMetricCalculator.CycleAveragePressureLoss(
+			closedFluxSamples,
+			1e-5);
+		double inletMass = IntegrateMass(closedFluxSamples, value => value.InletMassFlowKgPerSecond);
+		double outletMass = IntegrateMass(closedFluxSamples, value => value.OutletMassFlowKgPerSecond);
+		double massImbalance = Math.Abs(inletMass - outletMass)
+			/ Math.Max(Math.Max(Math.Abs(inletMass), Math.Abs(outletMass)), double.Epsilon);
+		string relativeResult = Path.GetRelativePath(Path.GetDirectoryName(fullCase)!, resultPath);
+		document = document with
+		{
+			Results = document.Results with
+			{
+				Transient = new(relativeResult, resultFileHash, acceptedCycle, frameCount, periodicity),
+				TransientSummary = new CfdTransientResultSummary
+				{
+					Status = resultStatus,
+					CycleAveragePressureLossPa = cyclePressureLoss,
+					CycleMassImbalanceFraction = massImbalance,
+					Frames = frameMetrics,
+					Diagnostic = periodicity.Passed
+						? $"Cycle {acceptedCycle} satisfies every periodicity criterion."
+						: $"Cycle {acceptedCycle} remains viewable but did not satisfy every periodicity criterion.",
+				},
+			},
+		};
+		CfdCaseStore.Save(fullCase, document);
+		Console.WriteLine($"{document.Results.TransientSummary!.Status}: {resultPath}");
+		return periodicity.Passed ? 0 : 2;
+	}
+
+	private static IEnumerable<CfdFlowFrameSource> CollectTransientMetrics(
+		IEnumerable<CfdFlowFrameSource> frames,
+		CfdCaseDocument document,
+		GasPathManifest path,
+		List<CfdTransientFrameMetric> metrics,
+		List<CfdTransientFluxSample> fluxes)
+	{
+		foreach (CfdFlowFrameSource frame in frames)
+		{
+			HashSet<string> closedInlets = NominallyClosedInlets(
+				path,
+				document.EngineTransient!,
+				frame.CrankAngleDegrees);
+			(CfdTransientFrameMetric metric, CfdTransientFluxSample flux) = CfdMetrics.CalculateTransientFrame(
+				frame.Index,
+				frame.TimeSeconds,
+				frame.CrankAngleDegrees,
+				frame.Results.Boundaries,
+				document.Solver.Fluid,
+				document.Capture.MinimumMetricMassFlowKgPerSecond,
+				closedInlets);
+			metrics.Add(metric);
+			fluxes.Add(flux);
+			yield return frame;
+		}
+	}
+
+	private static HashSet<string> NominallyClosedInlets(
+		GasPathManifest path,
+		CfdEngineTransientSettings transient,
+		double crankAngleDegrees)
+	{
+		Dictionary<int, double> phases = transient.FiringOrder
+			.Select((cylinder, index) => (cylinder, phase: index * 720.0 / transient.FiringOrder.Length))
+			.ToDictionary(value => value.cylinder, value => value.phase);
+		Dictionary<string, int> cylinders = transient.CylinderAssignments
+			.ToDictionary(value => value.ComponentId, value => value.CylinderNumber, StringComparer.Ordinal);
+		return path.Openings.Where(value => value.Role == "inlet").Where(opening =>
+		{
+			double local = (crankAngleDegrees - phases[cylinders[opening.ComponentId]] + 720.0) % 720.0;
+			return local < transient.EventStartDegreesAfterFiring
+				|| local > transient.EventEndDegreesAfterFiring;
+		}).Select(value => value.PatchName).ToHashSet(StringComparer.Ordinal);
+	}
+
+	private static double IntegrateMass(
+		IReadOnlyList<CfdTransientFluxSample> samples,
+		Func<CfdTransientFluxSample, double> selector)
+	{
+		double result = 0;
+		for (int index = 1; index < samples.Count; ++index)
+		{
+			double dt = samples[index].TimeSeconds - samples[index - 1].TimeSeconds;
+			result += 0.5 * (selector(samples[index - 1]) + selector(samples[index])) * dt;
+		}
+		return result;
+	}
+
+	private static IReadOnlyList<CfdTransientFluxSample> CloseCycle(
+		IReadOnlyList<CfdTransientFluxSample> samples,
+		double cycleDurationSeconds)
+	{
+		if (samples.Count == 0) return samples;
+		CfdTransientFluxSample first = samples[0];
+		return samples.Append(first with { TimeSeconds = first.TimeSeconds + cycleDurationSeconds }).ToArray();
 	}
 
 	private static int ReadIterationCount(string logPath)
@@ -231,15 +522,63 @@ internal static class Program
 	{
 		string fullCase = Path.GetFullPath(casePath);
 		CfdCaseDocument document = CfdCaseStore.Load(fullCase);
-		if (document.Results == null)
-			throw new InvalidOperationException("The CFD case has no persisted results to view.");
+		if (document.Results.Steady == null && document.Results.Transient == null)
+			return ViewUnsolvedCase(fullCase, document);
+		if (document.AnalysisMode == CfdAnalysisMode.EngineTransient)
+			return ViewTransientCase(fullCase, document);
 		string packagePath = Path.GetFullPath(Path.Combine(
 			Path.GetDirectoryName(fullCase)!,
 			document.SourcePackagePath));
 		LoadedGasPackage package = GasPackageReader.Load(packagePath);
 		GasPathManifest path = package.Manifest.Paths.Single(item => item.Id == document.SelectedGasPathId);
+		if (document.AnalysisMode == CfdAnalysisMode.EngineTransient)
+			document.EngineTransient!.ValidateAgainst(path);
 		VerifiedOpenFoamResults results = OpenFoamResultVerifier.Verify(fullCase + ".work\\results", path);
-		using CfdViewerApplication viewer = new(null, results, document.Results);
+		using CfdViewerApplication viewer = new(null, results, document.Results.Steady);
+		viewer.Run();
+		return 0;
+	}
+
+	private static int ViewUnsolvedCase(string fullCasePath, CfdCaseDocument document)
+	{
+		string packagePath = Path.GetFullPath(Path.Combine(
+			Path.GetDirectoryName(fullCasePath)!,
+			document.SourcePackagePath));
+		LoadedGasPackage package = GasPackageReader.Load(packagePath);
+		string temporary = Path.Combine(Path.GetTempPath(), $"fishgfx-cfd-case-view-{Guid.NewGuid():N}");
+		try
+		{
+			PreparedCfdPackage prepared = CfdGeometryPipeline.Prepare(
+				package,
+				document.SelectedGasPathId,
+				temporary);
+			Console.WriteLine(
+				"No transient result exists yet. Showing the published gas geometry; use the explicit 'run' command to solve.");
+			using CfdViewerApplication viewer = new(prepared.Tessellation);
+			viewer.Run();
+			return 0;
+		}
+		finally
+		{
+			if (Directory.Exists(temporary)) Directory.Delete(temporary, true);
+		}
+	}
+
+	private static int ViewTransientCase(string fullCasePath, CfdCaseDocument document)
+	{
+		CfdTransientResultReference reference = document.Results.Transient
+			?? throw new InvalidOperationException("The transient case has no persisted FGFLOW result.");
+		string resultPath = Path.GetFullPath(Path.Combine(
+			Path.GetDirectoryName(fullCasePath)!,
+			reference.RelativePath));
+		using FgFlowResultSequence sequence = new(resultPath, reference.Sha256);
+		if (sequence.FrameCount != reference.FrameCount)
+			throw new InvalidDataException("The FGFLOW frame count does not match the case reference.");
+		using CfdViewerApplication viewer = new(
+			sequence,
+			transient: document.EngineTransient,
+			transientResult: reference,
+			transientSummary: document.Results.TransientSummary);
 		viewer.Run();
 		return 0;
 	}
@@ -263,14 +602,20 @@ internal static class Program
 			package,
 			document.SelectedGasPathId,
 			work);
-		WslOpenFoamEnvironment environment = await WslOpenFoamEnvironment.DetectAsync();
+		WslOpenFoamEnvironment environment = await WslOpenFoamEnvironment.DetectAsync(document.AnalysisMode);
 		string meshHash = CfdCaseStore.ComputeMeshHash(document, environment.Fingerprint);
 		string solveHash = CfdCaseStore.ComputeSolveHash(document, environment.Fingerprint, meshHash);
+		string? captureHash = document.AnalysisMode == CfdAnalysisMode.EngineTransient
+			? CfdCaseStore.ComputeCaptureHash(document, solveHash)
+			: null;
+		string? resultHash = captureHash == null ? null : CfdCaseStore.ComputeResultHash(document, captureHash);
 		document = document with
 		{
 			Toolchain = environment.Fingerprint,
 			MeshHash = meshHash,
 			SolveHash = solveHash,
+			CaptureHash = captureHash,
+			ResultHash = resultHash,
 			MatchingDiagnostics = prepared.Diagnostics.ToList(),
 		};
 		OpenFoamCaseGenerator.Generate(work, document, package, prepared.Geometry);
@@ -282,8 +627,10 @@ internal static class Program
 	{
 		Console.Error.WriteLine("FishGfx.CFD inspect <gas.fggas>");
 		Console.Error.WriteLine("FishGfx.CFD create <gas.fggas> <case.fgcfd> [path-id]");
+		Console.Error.WriteLine("FishGfx.CFD create-transient <gas.fggas> <case.fgcfd> --preset corsa-3500 [--initial-steady <case.fgcfd>]");
 		Console.Error.WriteLine("FishGfx.CFD prepare <case.fgcfd>");
 		Console.Error.WriteLine("FishGfx.CFD run <case.fgcfd>");
+		Console.Error.WriteLine("FishGfx.CFD run-view <case.fgcfd>");
 		Console.Error.WriteLine("FishGfx.CFD view <gas.fggas> [path-id]");
 		Console.Error.WriteLine("FishGfx.CFD view <case.fgcfd>");
 		return 64;
