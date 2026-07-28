@@ -174,6 +174,11 @@ public sealed class CorsaFlangeCollectorTests
 			cancellationToken
 		);
 		Assert.Equal(25.4, fixture.Collector.OutletTransitionSetback, 9);
+		fixture.Collector.OutletProfile = CadCollectorSystem.AreaPreservingOutletProfile(
+			fixture.MemberEvaluations.Values.Select(result => result.Chain.ActiveProfile),
+			fixture.Collector.OutletProfile.WallThicknessMillimetres
+		);
+		Assert.Equal(80.8, fixture.Collector.OutletProfile.OuterDiameterMillimetres, 9);
 		bool staging = false;
 		try
 		{

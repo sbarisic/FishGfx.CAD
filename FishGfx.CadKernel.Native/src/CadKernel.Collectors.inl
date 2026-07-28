@@ -192,6 +192,48 @@ fgcad_status fgcad_document_build_collector_system(
 			}
 			return result;
 		};
+		fgcad_collector_system_spec effective_system = *system;
+		double combined_member_gas_area = 0;
+		for (size_t index = 0; index < inlet_count; ++index)
+		{
+			collector_profile_faces inlet_faces = profile_faces(inlets[index]);
+			GProp_GProps inner_properties;
+			BRepGProp::SurfaceProperties(inlet_faces.inner, inner_properties);
+			double inner_area = std::abs(inner_properties.Mass());
+			if (!std::isfinite(inner_area) || !(inner_area > Precision::Confusion()))
+			{
+				throw std::invalid_argument(
+					"A collector member has no finite positive gas profile area.");
+			}
+			combined_member_gas_area += inner_area;
+		}
+		double outlet_wall_thickness = system->outlet_profile.wall_thickness;
+		if (!std::isfinite(combined_member_gas_area)
+			|| !(combined_member_gas_area > Precision::Confusion())
+			|| !std::isfinite(outlet_wall_thickness)
+			|| !(outlet_wall_thickness > Precision::Confusion()))
+		{
+			throw std::invalid_argument(
+				"The area-preserving collector outlet profile is invalid.");
+		}
+		double area_preserving_inner_radius = std::sqrt(
+			combined_member_gas_area / pi);
+		effective_system.outlet_profile.kind = FGCAD_PROFILE_CIRCULAR;
+		effective_system.outlet_profile.mate_id[0] = '\0';
+		effective_system.outlet_profile.outer_diameter = 2.0 * (
+			area_preserving_inner_radius + outlet_wall_thickness);
+		effective_system.outlet_profile.wall_thickness = outlet_wall_thickness;
+		effective_system.outlet_profile.equivalent_radius = 0;
+		system = &effective_system;
+		append_native_log(
+			"collector",
+			"Area-preserving outlet: memberGasArea="
+				+ std::to_string(combined_member_gas_area)
+				+ "; innerDiameter="
+				+ std::to_string(area_preserving_inner_radius * 2.0)
+				+ "; outerDiameter="
+				+ std::to_string(system->outlet_profile.outer_diameter)
+				+ ".");
 		auto boundary_profile_faces = [](const runner_boundary_record& boundary)
 		{
 			BRepBuilderAPI_MakeFace outer_face(boundary.outer, true);
@@ -816,7 +858,7 @@ fgcad_status fgcad_document_build_collector_system(
 		auto previous = document->collectors.find(system_id);
 		std::ostringstream assembly_key_stream;
 		assembly_key_stream << std::setprecision(17)
-			<< "abi=10;builder=runner-sew-2;runner-gas=1;collector-sew-5;collector-gas=4;collector-branch-solver-1;transactional-publish=1;occt=8.0.0;"
+			<< "abi=11;builder=runner-sew-2;runner-gas=1;collector-sew-6;collector-gas=5;collector-branch-solver-1;transactional-publish=1;occt=8.0.0;"
 			<< system->outlet_frame.origin.x << ','
 			<< system->outlet_frame.origin.y << ','
 			<< system->outlet_frame.origin.z << ','
@@ -835,7 +877,7 @@ fgcad_status fgcad_document_build_collector_system(
 			<< system->outlet_profile.equivalent_radius << ';';
 		std::ostringstream branch_gas_key_stream;
 		branch_gas_key_stream << std::setprecision(17)
-			<< "collector-branch-gas-4;"
+			<< "collector-branch-gas-5;"
 			<< system->outlet_frame.origin.x << ','
 			<< system->outlet_frame.origin.y << ','
 			<< system->outlet_frame.origin.z << ','
@@ -917,7 +959,7 @@ fgcad_status fgcad_document_build_collector_system(
 		}
 		replacement.assembly_key = assembly_key_stream.str();
 		replacement.branch_gas_key = branch_gas_key_stream.str();
-		replacement.gas_key = "collector-gas-4;" + replacement.branch_gas_key
+		replacement.gas_key = "collector-gas-5;" + replacement.branch_gas_key
 			+ complete_gas_key_stream.str();
 		auto publish_staged_runners = [&]()
 		{

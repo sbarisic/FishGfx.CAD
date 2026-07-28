@@ -89,9 +89,11 @@ public sealed class CadCollectorSystem
 
 	public CadFrame OutletFrame { get; set; } = CollectorFrameDefaults.Outlet;
 
-	// The exact collector lofts its outer and gas cut outlines directly to this
-	// fixed outlet profile. Legacy stub and merge values remain serialized for
-	// graph.json compatibility but do not create an outlet pipe.
+	// The exact collector lofts its outer and gas cut outlines directly to an
+	// area-preserving circular outlet derived from all member gas profiles. This
+	// value retains the derived diameter and supplies the outlet wall thickness.
+	// Legacy stub and merge values remain serialized for graph.json compatibility
+	// but do not create an outlet pipe.
 	public PipeProfile OutletProfile { get; set; } = new(63.5, 2);
 
 	public double OutletStubLength { get; set; } = 50;
@@ -115,6 +117,45 @@ public sealed class CadCollectorSystem
 	{
 		return outletProfile.OuterDiameterMillimetres
 			* OutletTransitionSetbackDiameterRatio;
+	}
+
+	public static PipeProfile AreaPreservingOutletProfile(
+		IEnumerable<RunnerSectionProfile> memberProfiles,
+		double wallThicknessMillimetres
+	)
+	{
+		ArgumentNullException.ThrowIfNull(memberProfiles);
+		if (!double.IsFinite(wallThicknessMillimetres)
+			|| wallThicknessMillimetres <= 0)
+		{
+			throw new ArgumentOutOfRangeException(
+				nameof(wallThicknessMillimetres),
+				"The collector outlet wall thickness must be finite and positive."
+			);
+		}
+
+		RunnerSectionProfile[] profiles = memberProfiles.ToArray();
+		if (profiles.Length < 2 || profiles.Any(profile => profile == null))
+		{
+			throw new ArgumentException(
+				"An area-preserving collector outlet requires at least two member profiles.",
+				nameof(memberProfiles)
+			);
+		}
+		double innerArea = profiles.Sum(profile => profile.InnerAreaMillimetresSquared);
+		if (!double.IsFinite(innerArea) || innerArea <= 0)
+		{
+			throw new ArgumentException(
+				"The combined collector member gas area must be finite and positive.",
+				nameof(memberProfiles)
+			);
+		}
+
+		double innerRadius = Math.Sqrt(innerArea / Math.PI);
+		return new PipeProfile(
+			2 * (innerRadius + wallThicknessMillimetres),
+			wallThicknessMillimetres
+		);
 	}
 
 	public bool IsResolved { get; set; } = true;

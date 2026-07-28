@@ -7,6 +7,28 @@ namespace FishGfx.ManifoldCad.Tests;
 public sealed class CollectorSystemTests
 {
 	[Fact]
+	public void AreaPreservingOutletSumsMemberGasAreas()
+	{
+		RunnerSectionProfile[] profiles = Enumerable.Repeat(
+			RunnerSectionProfile.FromCircular(new PipeProfile(42.4, 2)),
+			4
+		).ToArray();
+
+		PipeProfile outlet = CadCollectorSystem.AreaPreservingOutletProfile(
+			profiles,
+			2
+		);
+
+		Assert.Equal(80.8, outlet.OuterDiameterMillimetres, 9);
+		Assert.Equal(76.8, outlet.InnerRadiusMillimetres * 2, 9);
+		Assert.Equal(
+			profiles.Sum(profile => profile.InnerAreaMillimetresSquared),
+			Math.PI * outlet.InnerRadiusMillimetres * outlet.InnerRadiusMillimetres,
+			9
+		);
+	}
+
+	[Fact]
 	public void CircularPresetDistributesFourInletsOnOneSymmetricRing()
 	{
 		(ManifoldProject project, IReadOnlyList<CadRunner> runners) = CreateFourRunnerProject();

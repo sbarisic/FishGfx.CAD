@@ -42,6 +42,17 @@ public sealed record RunnerSectionProfile(
 	PipeProfile? CircularProfile
 )
 {
+	public double InnerAreaMillimetresSquared
+	{
+		get
+		{
+			double innerRadius = Kind == RunnerProfileKind.CircularPipe
+				? CircularProfile.Value.InnerRadiusMillimetres
+				: MateEquivalentRadiusMillimetres;
+			return Math.PI * innerRadius * innerRadius;
+		}
+	}
+
 	public static RunnerSectionProfile FromMate(CadMate mate, double wallThickness)
 	{
 		return new RunnerSectionProfile(

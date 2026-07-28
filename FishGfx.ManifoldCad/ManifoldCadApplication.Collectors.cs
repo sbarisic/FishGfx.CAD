@@ -470,6 +470,11 @@ internal sealed partial class ManifoldCadApplication
 			return;
 		}
 		Guid? inletId = project.View.ActiveCollectorInletId;
+		if (!inletId.HasValue && index == 2)
+		{
+			RefreshUi();
+			return;
+		}
 		CollectorSystemTransaction transaction = CollectorSystemTransaction.Begin(project);
 		if (!transaction.TryUpdate(
 			active.Id,
@@ -593,12 +598,15 @@ internal sealed partial class ManifoldCadApplication
 					CadFrame previousEnd = previousEvaluation.Chain.EndFrame;
 					CadPoint3 constraintChord =
 						constrainedFrame.Origin - previousEnd.Origin;
+					double chordTangentDot = constraintChord.Length > 1.0e-9
+						? CadPoint3.Dot(
+							constraintChord.Normalized(),
+							previousEnd.Tangent)
+						: 1;
 					ApplicationLog.Current?.Info(
 						$"Collector terminal constraint: runner={runner.Id}; "
 							+ $"distance={constraintChord.Length:R}; "
-							+ $"chordTangentDot={CadPoint3.Dot(
-								constraintChord.Normalized(),
-								previousEnd.Tangent):R}; "
+							+ $"chordTangentDot={chordTangentDot:R}; "
 							+ $"tangentDot={CadPoint3.Dot(previousEnd.Tangent, constrainedFrame.Tangent):R}; "
 							+ $"startHandle={startHandle}; "
 							+ $"endHandle={endHandle}"
@@ -621,6 +629,32 @@ internal sealed partial class ManifoldCadApplication
 					));
 				}
 			}
+
+			PipeProfile requestedOutletProfile = system.OutletProfile;
+			PipeProfile areaPreservingOutletProfile =
+				CadCollectorSystem.AreaPreservingOutletProfile(
+					members.Values.Select(result => result.Chain.ActiveProfile),
+					requestedOutletProfile.WallThicknessMillimetres
+				);
+			system.OutletProfile = areaPreservingOutletProfile;
+			string areaPreservingDependencyHash =
+				CadGeometryDependencyHash.Collector(project, system);
+			if (!string.Equals(
+				dependencyHash,
+				areaPreservingDependencyHash,
+				StringComparison.OrdinalIgnoreCase
+			))
+			{
+				dependencyHash = areaPreservingDependencyHash;
+				system.ExactBuild.Request(generationRevision, dependencyHash);
+				system.ExactBuild.TryBegin(generationRevision, dependencyHash);
+			}
+			ApplicationLog.Current?.Info(
+				$"Collector area-preserving outlet: id={system.Id}; "
+					+ $"memberGasAreaMm2={members.Values.Sum(result => result.Chain.ActiveProfile.InnerAreaMillimetresSquared):R}; "
+					+ $"outerDiameterMm={areaPreservingOutletProfile.OuterDiameterMillimetres:R}; "
+					+ $"wallThicknessMm={areaPreservingOutletProfile.WallThicknessMillimetres:R}"
+			);
 
 			long evaluatedMilliseconds = timing.ElapsedMilliseconds;
 			timing.Restart();

@@ -29,6 +29,7 @@ internal sealed partial class CadUi
 			{
 				("End handle target mm", system.BranchEndHandleLength),
 				("Outlet transition setback mm", system.OutletTransitionSetback),
+				("Derived outlet OD mm", system.OutletProfile.OuterDiameterMillimetres),
 			}
 			: new[]
 			{
@@ -41,6 +42,7 @@ internal sealed partial class CadUi
 			bool visible = index < fields.Length;
 			parameterLabels[index].Visible = visible;
 			parameters[index].Visible = visible;
+			parameters[index].Disabled = visible && inlet == null && index == 2;
 			if (visible)
 			{
 				parameterLabels[index].Text = fields[index].Label;
