@@ -8,6 +8,8 @@ namespace FishGfx.CFD;
 
 internal sealed class CfdViewerUi : IDisposable
 {
+	private static readonly Vector2 ControlsPosition = new(10, 10);
+	private static readonly Vector2 ControlsSize = new(430, 142);
 	private readonly FishUIGraphicsBackend graphics;
 	private readonly FishUIInputAdapter input;
 	private readonly FishUIRuntime ui;
@@ -22,8 +24,8 @@ internal sealed class CfdViewerUi : IDisposable
 		settings.LoadTheme("data/themes/gwen.yaml");
 		Panel panel = new()
 		{
-			Position = new Vector2(10, 10),
-			Size = new Vector2(430, 142),
+			Position = ControlsPosition,
+			Size = ControlsSize,
 			Variant = PanelVariant.Dark,
 		};
 		CfdResidualSample? lastResidual = summary?.Residuals.LastOrDefault();
@@ -56,11 +58,21 @@ internal sealed class CfdViewerUi : IDisposable
 			};
 			panel.AddChild(button);
 		}
+		panel.AddChild(new Label("Right-drag the viewport to rotate")
+		{
+			Position = new Vector2(12, 116),
+			Size = new Vector2(405, 18),
+		});
 		ui.AddControl(panel);
 	}
 
 	internal event Action<string>? ModeRequested;
 	internal event Action<string>? FieldRequested;
+	internal bool IsPointerOverControls(Vector2 point) =>
+		point.X >= ControlsPosition.X
+		&& point.X <= ControlsPosition.X + ControlsSize.X
+		&& point.Y >= ControlsPosition.Y
+		&& point.Y <= ControlsPosition.Y + ControlsSize.Y;
 	internal void BeginFrame() => input.BeginFrame();
 	internal void Update(float deltaTime, float time) => ui.TickUpdate(deltaTime, time);
 	internal void Render(RenderPass pass, float deltaTime, float time)

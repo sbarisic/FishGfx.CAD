@@ -31,6 +31,12 @@ internal sealed class CfdViewerApplication : IDisposable
 	private bool showArrows;
 	private string field = "p";
 	private int slicePointCount;
+	private Vector3 orbitTarget;
+	private float orbitDistance;
+	private float orbitYaw;
+	private float orbitPitch;
+	private Vector2 previousOrbitMouse;
+	private bool orbiting;
 	private bool disposed;
 
 	internal CfdViewerApplication(
@@ -103,6 +109,7 @@ internal sealed class CfdViewerApplication : IDisposable
 			input.BeginFrame();
 			ui.BeginFrame();
 			window.PollEvents();
+			UpdateCameraInteraction();
 			ui.Update(1f / 60f, (float)timing.Elapsed.TotalSeconds);
 			EnsureSceneTarget();
 			using RenderFrame frame = window.Graphics.BeginFrame();
@@ -206,10 +213,52 @@ internal sealed class CfdViewerApplication : IDisposable
 		Vector3 maximum = new(points.Max(item => item.X), points.Max(item => item.Y), points.Max(item => item.Z));
 		Vector3 center = (minimum + maximum) / 2;
 		float distance = Math.Max((maximum - minimum).Length() * 1.4f, 0.01f);
-		camera.Position = center + Vector3.Normalize(new Vector3(1, 0.65f, 1)) * distance;
+		Vector3 direction = Vector3.Normalize(new Vector3(1, 0.65f, 1));
+		orbitTarget = center;
+		orbitDistance = distance;
+		orbitYaw = MathF.Atan2(direction.X, direction.Z) * 180 / MathF.PI;
+		orbitPitch = MathF.Asin(direction.Y) * 180 / MathF.PI;
+		ConfigureCamera();
+	}
+
+	private void UpdateCameraInteraction()
+	{
+		Vector2 mouse = window.MousePosition;
+		if (input.WasMouseButtonPressed(MouseButton.Right))
+		{
+			orbiting = !ui.IsPointerOverControls(mouse);
+			previousOrbitMouse = mouse;
+		}
+
+		if (orbiting && input.IsMouseButtonDown(MouseButton.Right))
+		{
+			Vector2 delta = mouse - previousOrbitMouse;
+			orbitYaw -= delta.X * 0.35f;
+			orbitPitch = Math.Clamp(orbitPitch - delta.Y * 0.35f, -89, 89);
+		}
+
+		if (input.WasMouseButtonReleased(MouseButton.Right)) orbiting = false;
+		previousOrbitMouse = mouse;
+		ConfigureCamera();
+	}
+
+	private void ConfigureCamera()
+	{
+		float yaw = orbitYaw * MathF.PI / 180;
+		float pitch = orbitPitch * MathF.PI / 180;
+		Vector3 direction = new(
+			MathF.Sin(yaw) * MathF.Cos(pitch),
+			MathF.Sin(pitch),
+			MathF.Cos(yaw) * MathF.Cos(pitch));
+		camera.Position = orbitTarget + direction * orbitDistance;
 		camera.CameraUpNormal = Vector3.UnitY;
-		camera.LookAt(center);
-		camera.SetPerspective(window.Width, window.Height, MathF.PI / 3, distance / 1000, distance * 20);
+		camera.LookAt(orbitTarget);
+		camera.SetPerspective(
+			Math.Max(window.Width, 1),
+			Math.Max(window.Height, 1),
+			MathF.PI / 3,
+			orbitDistance / 1000,
+			orbitDistance * 20);
 	}
 
 	private void BuildSlice()
