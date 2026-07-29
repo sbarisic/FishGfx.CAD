@@ -36,10 +36,22 @@ public sealed class CfdModelTests
 		Assert.Equal(3, production.LayerCount);
 		CfdEngineTransientSettings transient = CfdMeshQualityPresets.CorsaTransient(
 			new CfdEngineTransientSettings(), CfdMeshQuality.Preview);
-		Assert.Equal(0.2, transient.MaximumCourantNumber);
+		Assert.Equal(0.5, transient.MaximumCourantNumber);
+		Assert.Equal(250, transient.MaximumVelocityMetersPerSecond);
 		Assert.Equal(CfdTransientTimeScheme.Euler, transient.TimeScheme);
-		Assert.Equal(0.5, transient.MaximumTimeStepDegrees);
+		Assert.Equal(4, transient.SolverAlignmentDegrees);
+		Assert.Equal(1, transient.MaximumTimeStepDegrees);
+		Assert.Equal(2, transient.PimpleOuterCorrectors);
+		Assert.Equal(1, transient.PimplePressureCorrectors);
+		Assert.Equal(0, transient.PimpleNonOrthogonalCorrectors);
+		Assert.Equal(2, transient.MinimumCycles);
 		Assert.Equal(2, transient.MaximumCycles);
+		CfdCaptureSettings capture = CfdMeshQualityPresets.CorsaCapture(
+			new CfdCaptureSettings(), CfdMeshQuality.Preview);
+		Assert.Equal(4, capture.RetainedOutputAngleDegrees);
+		CfdSolverSettings solver = CfdMeshQualityPresets.CorsaSolver(
+			new CfdSolverSettings());
+		Assert.Equal(CfdSolverSettings.CorsaEstimatedMassFlowKgPerSecond, solver.TotalMassFlowKgPerSecond);
 	}
 
 	[Fact]

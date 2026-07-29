@@ -375,16 +375,19 @@ internal sealed partial class CfdViewerApplication : IDisposable
 			if (pending.IsCompletedSuccessfully)
 			{
 				CfdStreamlineResult result = pending.Result;
-				streamlineCache.Add(result);
-				if (resultSequence != null)
+				if (!result.IsCanceled)
 				{
-					CfdFrameInfo active = resultSequence.GetFrameInfo(currentFrameIndex);
-					if (result.FrameIndex == active.Index && result.VelocityChecksum == active.VelocityBlockChecksum)
+					streamlineCache.Add(result);
+					if (resultSequence != null)
 					{
-						streamlines.Clear();
-						streamlines.AddRange(result.Lines);
-						displayedStreamlineFrame = result.FrameIndex;
-						RefreshLegend();
+						CfdFrameInfo active = resultSequence.GetFrameInfo(currentFrameIndex);
+						if (result.FrameIndex == active.Index && result.VelocityChecksum == active.VelocityBlockChecksum)
+						{
+							streamlines.Clear();
+							streamlines.AddRange(result.Lines);
+							displayedStreamlineFrame = result.FrameIndex;
+							RefreshLegend();
+						}
 					}
 				}
 			}
@@ -400,10 +403,13 @@ internal sealed partial class CfdViewerApplication : IDisposable
 		streamlineLoadCancellation?.Dispose();
 		streamlineLoadCancellation = new();
 		CancellationToken token = streamlineLoadCancellation.Token;
-		pendingStreamlineLoad = Task.Run(() => new CfdStreamlineResult(
+		pendingStreamlineLoad = Task.Run(() => CfdStreamlineTracer.Trace(
+			spatialSampleIndex,
+			velocities,
+			streamlineSeeds,
+			token,
 			frame,
-			checksum,
-			CfdStreamlineTracer.Trace(spatialSampleIndex, velocities, streamlineSeeds, token)), token);
+			checksum));
 	}
 
 	private int WrapFrame(int index)

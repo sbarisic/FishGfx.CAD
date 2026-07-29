@@ -21,6 +21,7 @@ internal static class Program
 				"create" when args.Length is 3 or 4 => Create(args[1], args[2], args.Length == 4 ? args[3] : null),
 				"create-transient" when args.Length >= 3 => CreateTransient(args),
 				"set-quality" when args.Length == 3 => SetQuality(args[1], args[2]),
+				"set-mass-flow" when args.Length == 3 => SetMassFlow(args[1], args[2]),
 				"prepare" when args.Length == 2 => await Prepare(args[1]),
 				"run" when args.Length == 2 => await Run(args[1]),
 				"run-view" when args.Length == 2 => await RunAndView(args[1]),
@@ -77,7 +78,7 @@ internal static class Program
 			if (steady.PackageFileHash != package.PackageFileHash
 				|| steady.SourceHash != package.ComputeSourceHash(path.Id)
 				|| steady.SelectedGasPathId != path.Id
-				|| steady.Solver.TotalMassFlowKgPerSecond != 0.1
+				|| steady.Solver.TotalMassFlowKgPerSecond != CfdSolverSettings.CorsaEstimatedMassFlowKgPerSecond
 				|| steady.Solver.InletTemperatureK != 900
 				|| steady.Solver.OutletPressurePa != 101325)
 				throw new InvalidDataException("The steady initialization case is incompatible with the Corsa source and operating point.");
@@ -107,6 +108,8 @@ internal static class Program
 		}
 		string fullCase = Path.GetFullPath(casePath);
 		string relative = Path.GetRelativePath(Path.GetDirectoryName(fullCase)!, package.PackagePath);
+		CfdSolverSettings solver = CfdMeshQualityPresets.CorsaSolver(
+			steadyInitialization?.Solver ?? new CfdSolverSettings());
 		CfdCaseDocument document = new()
 		{
 			SourcePackagePath = relative,
@@ -118,7 +121,8 @@ internal static class Program
 			Mesh = steadyInitialization != null && !qualityWasSpecified
 				? steadyInitialization.Mesh
 				: requestedMesh,
-			Solver = steadyInitialization?.Solver ?? new CfdSolverSettings(),
+			Solver = solver,
+			Capture = CfdMeshQualityPresets.CorsaCapture(new CfdCaptureSettings(), quality),
 		};
 		CfdCaseStore.Save(fullCase, document);
 		Console.WriteLine($"Created {fullCase}");
@@ -148,10 +152,12 @@ internal static class Program
 			};
 		}
 		transient = CfdMeshQualityPresets.CorsaTransient(transient, quality);
+		CfdCaptureSettings capture = CfdMeshQualityPresets.CorsaCapture(document.Capture, quality);
 		document = document with
 		{
 			Mesh = mesh,
 			EngineTransient = transient,
+			Capture = capture,
 			Toolchain = null,
 			MeshHash = null,
 			SolveHash = null,
@@ -160,12 +166,45 @@ internal static class Program
 			Results = new CfdCaseResults(),
 		};
 		CfdCaseStore.Save(fullCase, document);
-		Console.WriteLine($"Set {fullCase} to {CfdMeshQualityPresets.Name(quality)} mesh quality.");
+		Console.WriteLine($"Set {fullCase} to the {CfdMeshQualityPresets.Name(quality)} quality preset.");
+		if (quality == CfdMeshQuality.Preview)
+		{
+			Console.WriteLine(
+				"Preview uses a two-cycle limit, 4-degree output, coarse meshing, and stabilized low-cost solver controls.");
+		}
 		if (mappedSteady && quality != CfdMeshQuality.Production)
 		{
 			Console.WriteLine(
 				"The converged production steady field will be mapped onto the lower-quality mesh before transient startup.");
 		}
+		return 0;
+	}
+
+	private static int SetMassFlow(string casePath, string value)
+	{
+		if (!double.TryParse(
+			value,
+			System.Globalization.NumberStyles.Float,
+			System.Globalization.CultureInfo.InvariantCulture,
+			out double massFlow)
+			|| !double.IsFinite(massFlow)
+			|| massFlow <= 0)
+		{
+			throw new ArgumentException("Mass flow must be a finite positive value in kg/s.");
+		}
+		string fullCase = Path.GetFullPath(casePath);
+		CfdCaseDocument document = CfdCaseStore.Load(fullCase);
+		document = document with
+		{
+			Solver = document.Solver with { TotalMassFlowKgPerSecond = massFlow },
+			SolveHash = null,
+			CaptureHash = null,
+			ResultHash = null,
+			Results = new CfdCaseResults(),
+		};
+		CfdCaseStore.Save(fullCase, document);
+		Console.WriteLine(FormattableString.Invariant(
+			$"Set {fullCase} aggregate mass flow to {massFlow:R} kg/s."));
 		return 0;
 	}
 
@@ -687,6 +726,7 @@ internal static class Program
 		Console.Error.WriteLine("FishGfx.CFD create <gas.fggas> <case.fgcfd> [path-id]");
 		Console.Error.WriteLine("FishGfx.CFD create-transient <gas.fggas> <case.fgcfd> --preset corsa-3500 [--quality preview|balanced|production] [--initial-steady <case.fgcfd>]");
 		Console.Error.WriteLine("FishGfx.CFD set-quality <case.fgcfd> preview|balanced|production");
+		Console.Error.WriteLine("FishGfx.CFD set-mass-flow <case.fgcfd> <kg/s>");
 		Console.Error.WriteLine("FishGfx.CFD prepare <case.fgcfd>");
 		Console.Error.WriteLine("FishGfx.CFD run <case.fgcfd>");
 		Console.Error.WriteLine("FishGfx.CFD run-view <case.fgcfd>");

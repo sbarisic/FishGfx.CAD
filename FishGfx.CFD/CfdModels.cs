@@ -141,34 +141,63 @@ public static class CfdMeshQualityPresets
 	{
 		CfdMeshQuality.Preview => settings with
 		{
-			MaximumTimeStepDegrees = 0.5,
-			MaximumCourantNumber = 0.2,
+			SolverAlignmentDegrees = 4,
+			MaximumTimeStepDegrees = 1,
+			MaximumCourantNumber = 0.5,
+			MaximumVelocityMetersPerSecond = 250,
 			TimeScheme = CfdTransientTimeScheme.Euler,
+			PimpleOuterCorrectors = 2,
+			PimplePressureCorrectors = 1,
+			PimpleNonOrthogonalCorrectors = 0,
 			MinimumCycles = 2,
 			MaximumCycles = 2,
 		},
 		CfdMeshQuality.Balanced => settings with
 		{
+			SolverAlignmentDegrees = 2,
 			MaximumTimeStepDegrees = 0.25,
 			MaximumCourantNumber = 0.75,
+			MaximumVelocityMetersPerSecond = 400,
 			TimeScheme = CfdTransientTimeScheme.Backward,
+			PimpleOuterCorrectors = 2,
+			PimplePressureCorrectors = 2,
+			PimpleNonOrthogonalCorrectors = 1,
 			MinimumCycles = 3,
 			MaximumCycles = 4,
 		},
 		CfdMeshQuality.Production => settings with
 		{
+			SolverAlignmentDegrees = 2,
 			MaximumTimeStepDegrees = 0.25,
 			MaximumCourantNumber = 0.5,
+			MaximumVelocityMetersPerSecond = 400,
 			TimeScheme = CfdTransientTimeScheme.Backward,
+			PimpleOuterCorrectors = 2,
+			PimplePressureCorrectors = 2,
+			PimpleNonOrthogonalCorrectors = 1,
 			MinimumCycles = 3,
 			MaximumCycles = 6,
 		},
 		_ => throw new ArgumentOutOfRangeException(nameof(quality)),
 	};
+
+	public static CfdCaptureSettings CorsaCapture(
+		CfdCaptureSettings settings,
+		CfdMeshQuality quality) => settings with
+	{
+		RetainedOutputAngleDegrees = quality == CfdMeshQuality.Preview ? 4 : 2,
+	};
+
+	public static CfdSolverSettings CorsaSolver(
+		CfdSolverSettings settings) => settings with
+	{
+		TotalMassFlowKgPerSecond = CfdSolverSettings.CorsaEstimatedMassFlowKgPerSecond,
+	};
 }
 
 public sealed record CfdSolverSettings
 {
+	public const double CorsaEstimatedMassFlowKgPerSecond = 0.055;
 	public double OutletPressurePa { get; init; } = 101325;
 	public double InletTemperatureK { get; init; } = 900;
 	public double TotalMassFlowKgPerSecond { get; init; } = 0.1;
@@ -240,6 +269,9 @@ public sealed record CfdEngineTransientSettings
 	public int CollapsedTimeStepPollLimit { get; init; } = 10;
 	public double MaximumCourantNumber { get; init; } = 0.5;
 	public CfdTransientTimeScheme TimeScheme { get; init; } = CfdTransientTimeScheme.Backward;
+	public int PimpleOuterCorrectors { get; init; } = 2;
+	public int PimplePressureCorrectors { get; init; } = 2;
+	public int PimpleNonOrthogonalCorrectors { get; init; } = 1;
 	public double MaximumVelocityMetersPerSecond { get; init; } = 400;
 	public double OutletWaveRelaxationLengthMm { get; init; } = 10;
 	public int StartupRampCycles { get; init; } = 1;
@@ -297,6 +329,9 @@ public sealed record CfdEngineTransientSettings
 			|| MaximumTimeStepDegrees > SolverAlignmentDegrees
 			|| MinimumTimeStepDegrees >= MaximumTimeStepDegrees
 			|| CollapsedTimeStepPollLimit < 1
+			|| PimpleOuterCorrectors < 1
+			|| PimplePressureCorrectors < 1
+			|| PimpleNonOrthogonalCorrectors < 0
 			|| StartupRampCycles < 1
 			|| MaximumVelocityMetersPerSecond <= 0
 			|| !DividesCycle(PulseTableStepDegrees)

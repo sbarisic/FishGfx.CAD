@@ -27,8 +27,8 @@ solvers
 }
 PIMPLE
 {
-    nOuterCorrectors 2;
-    nCorrectors 2;
-    nNonOrthogonalCorrectors 1;
+    nOuterCorrectors {{PIMPLE_OUTER_CORRECTORS}};
+    nCorrectors {{PIMPLE_PRESSURE_CORRECTORS}};
+    nNonOrthogonalCorrectors {{PIMPLE_NON_ORTHOGONAL_CORRECTORS}};
     momentumPredictor yes;
 }

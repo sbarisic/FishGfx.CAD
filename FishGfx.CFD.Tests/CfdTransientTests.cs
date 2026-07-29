@@ -166,6 +166,39 @@ public sealed class CfdTransientTests
 	}
 
 	[Fact]
+	public void StreamlineCancellationReturnsWithoutThrowingOrPublishingPartialLines()
+	{
+		VtkVector[] points =
+		[
+			new(0, 0, 0),
+			new(1, 0, 0),
+			new(2, 0, 0),
+		];
+		VtkVector[] velocities =
+		[
+			new(1, 0, 0),
+			new(1, 0, 0),
+			new(1, 0, 0),
+		];
+		CfdSpatialSampleIndex index = new(points, 1);
+		using CancellationTokenSource cancellation = new();
+		cancellation.Cancel();
+
+		CfdStreamlineResult result = CfdStreamlineTracer.Trace(
+			index,
+			velocities,
+			[new System.Numerics.Vector3(0, 0, 0)],
+			cancellation.Token,
+			17,
+			"velocity-checksum");
+
+		Assert.True(result.IsCanceled);
+		Assert.Empty(result.Lines);
+		Assert.Equal(17, result.FrameIndex);
+		Assert.Equal("velocity-checksum", result.VelocityChecksum);
+	}
+
+	[Fact]
 	public async Task FgFlowRoundTripsLazyFramesAndAssociationRanges()
 	{
 		string directory = Path.Combine(Path.GetTempPath(), $"fishgfx-fgflow-{Guid.NewGuid():N}");

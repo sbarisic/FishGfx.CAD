@@ -15,7 +15,7 @@ public sealed record CfdPreparedGeometry(
 public static class OpenFoamCaseGenerator
 {
 	public const string TemplateVersion = "openfoam14-steady-compressible-7";
-	public const string TransientTemplateVersion = "openfoam14-transient-engine-21";
+	public const string TransientTemplateVersion = "openfoam14-transient-engine-22";
 	public const int PostProcessingVersion = 7;
 
 	public static string TemplateVersionFor(CfdAnalysisMode mode) => mode switch
@@ -138,6 +138,9 @@ public static class OpenFoamCaseGenerator
 			values["MAX_DELTA_T"] = F(transient.MaximumTimeStepDegrees * transient.SecondsPerDegree);
 			values["WRITE_INTERVAL"] = F(transient.SolverAlignmentDegrees * transient.SecondsPerDegree);
 			values["MAX_CO"] = F(transient.MaximumCourantNumber);
+			values["PIMPLE_OUTER_CORRECTORS"] = I(transient.PimpleOuterCorrectors);
+			values["PIMPLE_PRESSURE_CORRECTORS"] = I(transient.PimplePressureCorrectors);
+			values["PIMPLE_NON_ORTHOGONAL_CORRECTORS"] = I(transient.PimpleNonOrthogonalCorrectors);
 			values["TIME_SCHEME"] = transient.TimeScheme switch
 			{
 				CfdTransientTimeScheme.Euler => "Euler",

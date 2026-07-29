@@ -5,7 +5,11 @@ namespace FishGfx.CFD;
 
 internal readonly record struct CfdStreamlinePoint(Vector3 Position, Vector3 Velocity, double Speed);
 internal sealed record CfdStreamline(CfdStreamlinePoint[] Points);
-internal sealed record CfdStreamlineResult(int FrameIndex, string VelocityChecksum, CfdStreamline[] Lines);
+internal sealed record CfdStreamlineResult(
+	int FrameIndex,
+	string VelocityChecksum,
+	CfdStreamline[] Lines,
+	bool IsCanceled = false);
 
 internal sealed class CfdSpatialSampleIndex
 {
@@ -114,27 +118,35 @@ internal sealed class CfdVelocityFieldSampler
 
 internal static class CfdStreamlineTracer
 {
-	internal static CfdStreamline[] Trace(
+	internal static CfdStreamlineResult Trace(
 		CfdSpatialSampleIndex index,
 		VtkVector[] velocities,
 		IReadOnlyList<Vector3> seeds,
-		CancellationToken cancellationToken)
+		CancellationToken cancellationToken,
+		int frameIndex = 0,
+		string velocityChecksum = "")
 	{
+		if (cancellationToken.IsCancellationRequested)
+			return new(frameIndex, velocityChecksum, [], true);
 		Vector3 minimum = new((float)index.Points.Min(v => v.X), (float)index.Points.Min(v => v.Y), (float)index.Points.Min(v => v.Z));
 		Vector3 maximum = new((float)index.Points.Max(v => v.X), (float)index.Points.Max(v => v.Y), (float)index.Points.Max(v => v.Z));
 		Vector3 extent = maximum - minimum;
 		float stepLength = new[] { extent.X, extent.Y, extent.Z }.Where(value => value > 0).Min() / 90;
 		double maximumSpeed = velocities.Max(value => value.Length);
-		if (!(stepLength > 0) || !(maximumSpeed > 0)) return [];
+		if (!(stepLength > 0) || !(maximumSpeed > 0))
+			return new(frameIndex, velocityChecksum, []);
 		CfdVelocityFrameSampler sampler = new(index, velocities);
 		List<CfdStreamline> result = [];
 		foreach (Vector3 seed in seeds)
 		{
-			cancellationToken.ThrowIfCancellationRequested();
+			if (cancellationToken.IsCancellationRequested)
+				return new(frameIndex, velocityChecksum, [], true);
 			CfdStreamline? line = TraceOne(sampler, seed, stepLength, extent.Length() * 2.5f, maximumSpeed, cancellationToken);
+			if (cancellationToken.IsCancellationRequested)
+				return new(frameIndex, velocityChecksum, [], true);
 			if (line != null) result.Add(line);
 		}
-		return result.ToArray();
+		return new(frameIndex, velocityChecksum, result.ToArray());
 	}
 
 	private static CfdStreamline? TraceOne(
@@ -151,7 +163,7 @@ internal static class CfdStreamlineTracer
 		float tracedLength = 0;
 		for (int step = 0; step < 360 && tracedLength < maximumLength; ++step)
 		{
-			if ((step & 15) == 0) cancellationToken.ThrowIfCancellationRequested();
+			if ((step & 15) == 0 && cancellationToken.IsCancellationRequested) return null;
 			if (!sampler.TrySample(position, out Vector3 firstVelocity)) break;
 			double speed = firstVelocity.Length();
 			if (speed <= maximumSpeed * 0.001) break;

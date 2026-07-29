@@ -44,6 +44,8 @@ public sealed class OpenFoamTemplateTests
 			string solution = File.ReadAllText(Path.Combine(target, "system", "fvSolution"));
 			Assert.Contains("solver PCG", solution);
 			Assert.Contains("preconditioner DIC", solution);
+			Assert.Contains("nOuterCorrectors 2", solution);
+			Assert.Contains("nCorrectors 2", solution);
 			Assert.Contains("nNonOrthogonalCorrectors 1", solution);
 			string constraints = File.ReadAllText(Path.Combine(target, "system", "fvConstraints"));
 			Assert.Contains("type            limitMag", constraints);
