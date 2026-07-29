@@ -86,6 +86,9 @@ public sealed class CfdTransientTests
 		};
 		CfdTransientPulseSet compatiblePulse = CfdTransientPulseGenerator.Generate(compatible, solver);
 		Assert.All(compatiblePulse.Cylinders, value => Assert.Equal(0.025, value.MassFlow[0].Value, 14));
+		CfdTransientPulseSet mappedPulse = CfdTransientPulseGenerator.Generate(
+			compatible with { InitialisationMode = TransientInitialisationMode.MappedSteadyPreview }, solver);
+		Assert.All(mappedPulse.Cylinders, value => Assert.Equal(0.025, value.MassFlow[0].Value, 14));
 	}
 
 	[Fact]

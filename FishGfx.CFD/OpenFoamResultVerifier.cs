@@ -16,22 +16,19 @@ public static class OpenFoamResultVerifier
 		string vtkRoot = Path.Combine(resultDirectory, "VTK");
 		if (!Directory.Exists(vtkRoot)) throw new InvalidDataException("foamToVTK did not produce a VTK directory.");
 		string[] files = Directory.GetFiles(vtkRoot, "*.vtk", SearchOption.AllDirectories);
-		double captureEnd = captureStartSeconds + cycleDurationSeconds;
 		var volumeFrames = files
 			.Where(file => string.Equals(Path.GetDirectoryName(file), vtkRoot, StringComparison.OrdinalIgnoreCase))
-			.Select(file => (File: file, Time: TryReadTime(file)))
-			.Where(value => value.Time.HasValue
-				&& value.Time.Value >= captureStartSeconds - 1e-10
-				&& value.Time.Value < captureEnd - 1e-10)
-			.OrderBy(value => value.Time)
+			.Select(file => (File: file, TimeIndex: TryReadTimeIndex(file)))
+			.Where(value => value.TimeIndex.HasValue)
+			.OrderBy(value => value.TimeIndex)
 			.ToArray();
 		int expectedCount = checked((int)Math.Round(720.0 / retainedAngleDegrees));
 		if (volumeFrames.Length != expectedCount)
 			throw new InvalidDataException($"Expected {expectedCount} retained transient VTK frames, found {volumeFrames.Length}.");
 		for (int index = 0; index < volumeFrames.Length; ++index)
 		{
-			(string volumePath, double? nullableTime) = volumeFrames[index];
-			double time = nullableTime!.Value;
+			string volumePath = volumeFrames[index].File;
+			double time = captureStartSeconds + index * retainedAngleDegrees * cycleDurationSeconds / 720.0;
 			LegacyVtkDataSet volume = LegacyVtkReader.Read(volumePath, true);
 			RequireFields(volume, false, ["p", "T", "rho", "Ma"], ["U"]);
 			string suffix = TimeSuffix(volumePath);
@@ -107,14 +104,14 @@ public static class OpenFoamResultVerifier
 			?? throw new InvalidDataException($"foamToVTK did not produce boundary dataset '{patchName}' at time {suffix}.");
 	}
 
-	private static double? TryReadTime(string path)
+	private static long? TryReadTimeIndex(string path)
 	{
 		string suffix = TimeSuffix(path);
-		return double.TryParse(
+		return long.TryParse(
 			suffix,
-			System.Globalization.NumberStyles.Float,
+			System.Globalization.NumberStyles.Integer,
 			System.Globalization.CultureInfo.InvariantCulture,
-			out double value) ? value : null;
+			out long value) ? value : null;
 	}
 
 	private static string TimeSuffix(string path)

@@ -1,5 +1,5 @@
 FoamFile { format ascii; class dictionary; location "system"; object fvSchemes; }
-ddtSchemes { default backward; }
+ddtSchemes { default {{TIME_SCHEME}}; }
 gradSchemes
 {
     default Gauss linear;
@@ -11,7 +11,10 @@ gradSchemes
 divSchemes
 {
     default none;
-    div(phi,U) bounded Gauss linearUpwind limited;
+    // First-order convection is intentional here. The production Corsa mesh
+    // contains small prism-layer cells where linearUpwind can create a local
+    // startup oscillation even while the domain-average Courant number is low.
+    div(phi,U) bounded Gauss upwind;
     turbulence bounded Gauss upwind;
     div(phi,k) $turbulence;
     div(phi,omega) $turbulence;
@@ -22,8 +25,8 @@ divSchemes
     div(phi,(p|rho)) bounded Gauss upwind;
     div(((rho*nuEff)*dev2(T(grad(U))))) Gauss linear;
 }
-laplacianSchemes { default Gauss linear corrected; }
+laplacianSchemes { default Gauss linear limited 0.5; }
 interpolationSchemes { default linear; }
-snGradSchemes { default corrected; }
+snGradSchemes { default limited 0.5; }
 fluxRequired { default no; p; }
 wallDist { method meshWave; }

@@ -83,11 +83,15 @@ public static class CfdCaseStore
 		CfdToolchainFingerprint toolchain,
 		string meshHash)
 	{
+		JsonObject solver = JsonSerializer.SerializeToNode(document.Solver, CfdJson.Options) as JsonObject
+			?? throw new InvalidDataException("Solver settings could not be canonicalized.");
+		// Runtime retention changes failure diagnostics, not the numerical problem.
+		solver.Remove("retainFailedRuntime");
 		JsonObject value = new()
 		{
 			["meshHash"] = meshHash,
 			["analysisMode"] = document.AnalysisMode.ToString(),
-			["solver"] = JsonSerializer.SerializeToNode(document.Solver, CfdJson.Options),
+			["solver"] = solver,
 			["solverTemplateVersion"] = toolchain.TemplateVersion,
 			["environmentScriptSha256"] = toolchain.EnvironmentScriptSha256,
 		};

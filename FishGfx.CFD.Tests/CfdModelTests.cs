@@ -22,6 +22,27 @@ public sealed class CfdModelTests
 	}
 
 	[Fact]
+	public void PreviewMeshRemovesLayersAndReducesResolutionWithoutChangingProductionDefaults()
+	{
+		CfdMeshSettings preview = CfdMeshQualityPresets.Corsa(CfdMeshQuality.Preview);
+		CfdMeshSettings production = CfdMeshQualityPresets.Corsa(CfdMeshQuality.Production);
+		preview.Validate();
+		production.Validate();
+		Assert.Equal(8, preview.CellsAcrossSmallestInlet);
+		Assert.Equal(0, preview.OpeningRefinementLevel);
+		Assert.Equal(0, preview.LayerCount);
+		Assert.Equal(250_000, preview.MaximumCells);
+		Assert.Equal(18, production.CellsAcrossSmallestInlet);
+		Assert.Equal(3, production.LayerCount);
+		CfdEngineTransientSettings transient = CfdMeshQualityPresets.CorsaTransient(
+			new CfdEngineTransientSettings(), CfdMeshQuality.Preview);
+		Assert.Equal(0.2, transient.MaximumCourantNumber);
+		Assert.Equal(CfdTransientTimeScheme.Euler, transient.TimeScheme);
+		Assert.Equal(0.5, transient.MaximumTimeStepDegrees);
+		Assert.Equal(2, transient.MaximumCycles);
+	}
+
+	[Fact]
 	public void ToolchainChangesInvalidateMeshAndSolveHashes()
 	{
 		CfdCaseDocument document = new() { SourceHash = new string('a', 64) };
@@ -33,6 +54,21 @@ public sealed class CfdModelTests
 		Assert.NotEqual(
 			CfdCaseStore.ComputeSolveHash(document, first, firstMesh),
 			CfdCaseStore.ComputeSolveHash(document, second, secondMesh));
+	}
+
+	[Fact]
+	public void FailedRuntimeRetentionDoesNotInvalidateSolveHash()
+	{
+		CfdCaseDocument discard = new() { SourceHash = new string('a', 64) };
+		CfdCaseDocument retain = discard with
+		{
+			Solver = discard.Solver with { RetainFailedRuntime = true },
+		};
+		CfdToolchainFingerprint toolchain = Toolchain("14");
+		string meshHash = CfdCaseStore.ComputeMeshHash(discard, toolchain);
+		Assert.Equal(
+			CfdCaseStore.ComputeSolveHash(discard, toolchain, meshHash),
+			CfdCaseStore.ComputeSolveHash(retain, toolchain, meshHash));
 	}
 
 	private static CfdToolchainFingerprint Toolchain(string version) => new(

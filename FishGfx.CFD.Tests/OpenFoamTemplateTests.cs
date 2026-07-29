@@ -37,7 +37,18 @@ public sealed class OpenFoamTemplateTests
 			OpenFoamCaseGenerator.Generate(target, document,
 				new("fixture", "", "", [], [], manifest),
 				new(stl, new(-.1, -.1, -.1), new(.1, .1, .1), new(0, 0, 0), 40));
-			Assert.Contains("default backward", File.ReadAllText(Path.Combine(target, "system", "fvSchemes")));
+			string schemes = File.ReadAllText(Path.Combine(target, "system", "fvSchemes"));
+			Assert.Contains("default backward", schemes);
+			Assert.Contains("div(phi,U) bounded Gauss upwind", schemes);
+			Assert.Contains("Gauss linear limited 0.5", schemes);
+			string solution = File.ReadAllText(Path.Combine(target, "system", "fvSolution"));
+			Assert.Contains("solver PCG", solution);
+			Assert.Contains("preconditioner DIC", solution);
+			Assert.Contains("nNonOrthogonalCorrectors 1", solution);
+			string constraints = File.ReadAllText(Path.Combine(target, "system", "fvConstraints"));
+			Assert.Contains("type            limitMag", constraints);
+			Assert.Contains("max             400", constraints);
+			Assert.DoesNotContain("type            limitPressure", constraints);
 			string control = File.ReadAllText(Path.Combine(target, "system", "controlDict"));
 			Assert.Contains("adjustTimeStep yes", control);
 			Assert.Contains("writeControl adjustableRunTime", control);
@@ -52,8 +63,16 @@ public sealed class OpenFoamTemplateTests
 			Assert.Contains("type table", velocity);
 			Assert.Contains("massFlowRate", velocity);
 			Assert.Contains("type inletOutlet", File.ReadAllText(Path.Combine(target, "0", "T")));
-			Assert.Contains("type turbulentKineticEnergy", File.ReadAllText(Path.Combine(target, "0", "k")));
-			Assert.Contains("type turbulentOmega", File.ReadAllText(Path.Combine(target, "0", "omega")));
+			string kineticEnergy = File.ReadAllText(Path.Combine(target, "0", "k"));
+			Assert.Contains("type inletOutlet", kineticEnergy);
+			Assert.Contains("inletValue uniform", kineticEnergy);
+			string omega = File.ReadAllText(Path.Combine(target, "0", "omega"));
+			Assert.Contains("type inletOutlet", omega);
+			Assert.Contains("inletValue uniform", omega);
+			string pressure = File.ReadAllText(Path.Combine(target, "0", "p"));
+			Assert.Contains("type waveTransmissive", pressure);
+			Assert.Contains("fieldInf 101325", pressure);
+			Assert.Contains("lInf 0.01", pressure);
 		}
 		finally { Directory.Delete(directory, true); }
 	}

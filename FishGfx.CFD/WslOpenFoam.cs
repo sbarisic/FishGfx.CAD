@@ -114,7 +114,15 @@ public sealed class WslOpenFoamRunner
 			runtime,
 			meshHash,
 			environment.EnvironmentScript);
-		string prepare = $"set -e; runtime={runtime}; rm -rf \"$runtime\"; mkdir -p \"$runtime\"; cp -a {WslOpenFoamEnvironment.Q(windowsWslPath + "/.")} \"$runtime/\"; {initialize} cd \"$runtime\"; bash run-wrapper.sh";
+		string source = WslOpenFoamEnvironment.Q(windowsWslPath);
+		string stage = document.AnalysisMode == CfdAnalysisMode.EngineTransient
+			? $"if test -f \"$runtime/solver-complete\"; then "
+				+ $"cp {source}/run-inner.sh \"$runtime/run-inner.sh\"; "
+				+ $"cp {source}/run-wrapper.sh \"$runtime/run-wrapper.sh\"; "
+				+ "rm -f \"$runtime/run-status.txt\"; echo FGCFD_CAPTURE_RESUME; "
+				+ $"else rm -rf \"$runtime\"; mkdir -p \"$runtime\"; cp -a {source}/. \"$runtime/\"; {initialize} fi; "
+			: $"rm -rf \"$runtime\"; mkdir -p \"$runtime\"; cp -a {source}/. \"$runtime/\"; {initialize}";
+		string prepare = $"set -e; runtime={runtime}; {stage} cd \"$runtime\"; bash run-wrapper.sh";
 		Console.WriteLine($"OpenFOAM {document.AnalysisMode} run started.");
 		Console.WriteLine($"Runtime: {runtime}");
 		Console.WriteLine($"Live log: {Path.Combine(results, "run.log")}");
@@ -210,6 +218,26 @@ public sealed class WslOpenFoamRunner
 			+ $"for field in U p T k omega nut alphat; do cp \"{runtime}/0/$field\" \"{runtime}/0/$field.transient\"; awk '/^boundaryField/{{exit}} {{print}}' \"$steady_runtime/$steady_time/$field\" > \"{runtime}/0/$field.merged\"; sed -n '/^boundaryField/,$p' \"{runtime}/0/$field.transient\" >> \"{runtime}/0/$field.merged\"; mv \"{runtime}/0/$field.merged\" \"{runtime}/0/$field\"; rm \"{runtime}/0/$field.transient\"; done; ";
 	}
 
+	private static string MappedSteadyInitialization(CfdCaseDocument document)
+	{
+		CfdEngineTransientSettings? transient = document.EngineTransient;
+		if (document.AnalysisMode != CfdAnalysisMode.EngineTransient
+			|| transient?.InitialisationMode != TransientInitialisationMode.MappedSteadyPreview)
+		{
+			return string.Empty;
+		}
+		string steadyRuntime =
+			$"$HOME/.local/share/FishGfx.CFD/cases/{transient.InitialSteadyCaseId:D}/{transient.InitialSteadySolveHash}";
+		return $"echo FGCFD_PHASE_BEGIN:mapSteadyFields\n"
+			+ $"steady_runtime={steadyRuntime}\n"
+			+ "test -d \"$steady_runtime/constant/polyMesh\" || { echo missing-compatible-steady-checkpoint >&2; exit 42; }\n"
+			+ "steady_time=$(find \"$steady_runtime\" -maxdepth 1 -type d -printf '%f\\n' | awk '/^[0-9]+([.][0-9]+)?$/' | sort -g | tail -n 1)\n"
+			+ "test -n \"$steady_time\" || { echo missing-compatible-steady-fields >&2; exit 42; }\n"
+			+ "mapFields -consistent -sourceTime \"$steady_time\" \"$steady_runtime\"\n"
+			+ "rm -f 0/Ma 0/Ma.gz 0/yPlus 0/yPlus.gz\n"
+			+ "echo FGCFD_PHASE_END:mapSteadyFields";
+	}
+
 	private async Task<int?> MonitorTransientCycles(
 		Task<ProcessResult> run,
 		string runtime,
@@ -230,7 +258,8 @@ public sealed class WslOpenFoamRunner
 				+ "output_time=$(find \"$runtime\" -maxdepth 1 -type d -printf '%f\\n' | awk '/^[0-9]+([.][0-9]+)?$/' | sort -g | tail -n 1); "
 				+ "simulation_time=$(awk '/^Time = .*s$/ { value=$3; sub(/s$/, \"\", value) } END { print value }' \"$runtime/run.log\" 2>/dev/null); "
 				+ "delta_t=$(awk '/^deltaT = / { value=$3 } END { print value }' \"$runtime/run.log\" 2>/dev/null); "
-				+ "printf '%s\\n%s\\n%s\\n' \"$output_time\" \"${simulation_time:-$output_time}\" \"$delta_t\"";
+				+ "initializing=$(test -f \"$runtime/.fgcfd-steady-initialization-active\" && echo steady || echo transient); "
+				+ "printf '%s\\n%s\\n%s\\n%s\\n' \"$output_time\" \"${simulation_time:-$output_time}\" \"$delta_t\" \"$initializing\"";
 			ProcessResult latestResult = await WslOpenFoamEnvironment.RunProcessAsync(
 				"wsl.exe",
 				["-d", environment.Distribution, "--", "bash", "-lc", WslOpenFoamEnvironment.EncodeBash(latestCommand)],
@@ -248,6 +277,15 @@ public sealed class WslOpenFoamRunner
 				&& double.TryParse(progress[2], System.Globalization.NumberStyles.Float,
 					System.Globalization.CultureInfo.InvariantCulture, out double parsedDeltaT)
 					? parsedDeltaT : null;
+			if (progress.Length > 3 && progress[3] == "steady")
+			{
+				if (++progressPolls % 10 == 1)
+				{
+					Console.WriteLine("OpenFOAM preview steady relaxation in progress.");
+				}
+				collapsedPolls = 0;
+				continue;
+			}
 			if (++progressPolls % 10 == 1)
 			{
 				double totalDegrees = simulationTime / settings.SecondsPerDegree;
@@ -334,6 +372,7 @@ public sealed class WslOpenFoamRunner
 		string solveAndPostProcess = document.AnalysisMode == CfdAnalysisMode.EngineTransient
 			? TransientSolveScript(document)
 			: SteadySolveScript();
+		string mappedInitialization = MappedSteadyInitialization(document);
 		string inner = """
 			#!/usr/bin/env bash
 			set -eo pipefail
@@ -359,10 +398,12 @@ public sealed class WslOpenFoamRunner
 			  mkdir -p "mesh-cache/$mesh_hash"
 			  cp -a constant/polyMesh "mesh-cache/$mesh_hash/polyMesh"
 			fi
+			{{MAPPED_INITIALIZATION}}
 			{{SOLVE_AND_POST}}
 			"""
 			.Replace("{{ENV}}", WslOpenFoamEnvironment.Q(environmentScript), StringComparison.Ordinal)
 			.Replace("{{MESH_HASH}}", meshHash, StringComparison.Ordinal)
+			.Replace("{{MAPPED_INITIALIZATION}}", mappedInitialization, StringComparison.Ordinal)
 			.Replace("{{SOLVE_AND_POST}}", solveAndPostProcess, StringComparison.Ordinal);
 		string wrapper = """
 			#!/usr/bin/env bash
@@ -396,12 +437,12 @@ public sealed class WslOpenFoamRunner
 		latest=$(find . -maxdepth 1 -type d -printf '%f\n' | awk '/^[0-9]+([.][0-9]+)?$/' | sort -g | tail -n 1)
 		test -n "$latest"
 		foamPostProcess -solver fluid -latestTime -func MachNo
-		test -f "$latest/Ma" && ! grep -Eqi 'nan|inf' "$latest/Ma"
+		test -f "$latest/Ma" || test -f "$latest/Ma.gz"
 		foamPostProcess -solver fluid -latestTime -func yPlus
-		test -f "$latest/yPlus" && ! grep -Eqi 'nan|inf' "$latest/yPlus"
-		test -f "$latest/rho" && ! grep -Eqi 'nan|inf' "$latest/rho"
+		test -f "$latest/yPlus" || test -f "$latest/yPlus.gz"
+		test -f "$latest/rho" || test -f "$latest/rho.gz"
 		foamToVTK -ascii -polyhedra none -latestTime -fields '(p T U rho Ma yPlus)'
-		test -d VTK && find VTK -type f | grep -q .
+		test -d VTK && test -n "$(find VTK -type f -print -quit)"
 		if grep -Eqi 'solution converged|converged in' solver.log; then
 		  echo converged > run-status.txt
 		else
@@ -419,32 +460,40 @@ public sealed class WslOpenFoamRunner
 		int groupCount = checked((frameCount + 4) / 5);
 		string maximumCycles = settings.MaximumCycles.ToString(System.Globalization.CultureInfo.InvariantCulture);
 		return """
-			echo FGCFD_PHASE_BEGIN:foamRun-transient
-			set +e
-			foamRun -solver fluid 2>&1 | tee solver.log
-			solver_status=${PIPESTATUS[0]}
-			set -e
-			if test "$solver_status" -ne 0 || grep -Eq 'FOAM FATAL|Floating point exception|nan|inf' solver.log; then
-			  echo fatal-error > run-status.txt
-			  exit 20
+			if test ! -f solver-complete; then
+			  echo FGCFD_PHASE_BEGIN:foamRun-transient
+			  set +e
+			  foamRun -solver fluid 2>&1 | tee solver.log
+			  solver_status=${PIPESTATUS[0]}
+			  set -e
+			  if test "$solver_status" -ne 0 || grep -Eq 'FOAM FATAL|Floating point exception|nan|inf' solver.log; then
+			    echo fatal-error > run-status.txt
+			    exit 20
+			  fi
+			  touch solver-complete
+			  echo FGCFD_PHASE_END:foamRun-transient
 			fi
-			echo FGCFD_PHASE_END:foamRun-transient
 			if test ! -f accepted-cycle.txt; then echo {{MAX_CYCLES}} > accepted-cycle.txt; fi
 			accepted_cycle=$(cat accepted-cycle.txt)
 			capture_start=$(awk -v c="$accepted_cycle" -v d={{CYCLE_DURATION}} 'BEGIN { printf "%.17g", (c-1)*d }')
 			capture_end=$(awk -v c="$accepted_cycle" -v d={{CYCLE_DURATION}} 'BEGIN { printf "%.17g", c*d }')
-			capture_range="$capture_start:$capture_end"
+			post_start=$(awk -v s="$capture_start" -v f={{FRAME_DURATION}} 'BEGIN { printf "%.17g", s - 0.25*f }')
+			post_end=$(awk -v e="$capture_end" -v f={{FRAME_DURATION}} 'BEGIN { printf "%.17g", e - 0.75*f }')
+			capture_range="$post_start:$post_end"
 			foamPostProcess -solver fluid -time "$capture_range" -func MachNo
 			foamPostProcess -solver fluid -time "$capture_range" -func yPlus
-			find . -maxdepth 2 -type f \( -name Ma -o -name yPlus -o -name rho \) -print0 | xargs -0 grep -Eqi 'nan|inf' && exit 22 || true
+			for field in Ma yPlus rho; do
+			  find . -maxdepth 2 -type f \( -name "$field" -o -name "$field.gz" \) -print -quit | grep -q .
+			done
+			rm -rf VTK
 			# Convert the retained half-open cycle in deterministic groups of five configured frames.
 			# The restart-only 720-degree state is excluded.
 			for group in $(seq 0 {{LAST_GROUP}}); do
-			  group_start=$(awk -v s="$capture_start" -v g="$group" -v f={{FRAME_DURATION}} 'BEGIN { printf "%.17g", s + g*5*f }')
+			  group_start=$(awk -v s="$capture_start" -v g="$group" -v f={{FRAME_DURATION}} 'BEGIN { printf "%.17g", s + g*5*f - 0.25*f }')
 			  group_last=$(awk -v g="$group" -v n={{FRAME_COUNT}} 'BEGIN { i=g*5+4; if (i >= n) i=n-1; print i-g*5 }')
-			  group_end=$(awk -v s="$group_start" -v f={{FRAME_DURATION}} -v n="$group_last" 'BEGIN { printf "%.17g", s + n*f }')
+			  group_end=$(awk -v s="$capture_start" -v g="$group" -v f={{FRAME_DURATION}} -v n="$group_last" 'BEGIN { printf "%.17g", s + (g*5+n)*f + 0.25*f }')
 			  foamToVTK -ascii -polyhedra none -time "$group_start:$group_end" -fields '(p T U rho Ma yPlus)'
-			  test -d VTK && find VTK -type f | grep -q .
+			  test -d VTK && test -n "$(find VTK -type f -print -quit)"
 			done
 			echo transient-complete > run-status.txt
 			"""

@@ -15,8 +15,8 @@ public sealed record CfdPreparedGeometry(
 public static class OpenFoamCaseGenerator
 {
 	public const string TemplateVersion = "openfoam14-steady-compressible-7";
-	public const string TransientTemplateVersion = "openfoam14-transient-engine-5";
-	public const int PostProcessingVersion = 2;
+	public const string TransientTemplateVersion = "openfoam14-transient-engine-21";
+	public const int PostProcessingVersion = 7;
 
 	public static string TemplateVersionFor(CfdAnalysisMode mode) => mode switch
 	{
@@ -138,6 +138,13 @@ public static class OpenFoamCaseGenerator
 			values["MAX_DELTA_T"] = F(transient.MaximumTimeStepDegrees * transient.SecondsPerDegree);
 			values["WRITE_INTERVAL"] = F(transient.SolverAlignmentDegrees * transient.SecondsPerDegree);
 			values["MAX_CO"] = F(transient.MaximumCourantNumber);
+			values["TIME_SCHEME"] = transient.TimeScheme switch
+			{
+				CfdTransientTimeScheme.Euler => "Euler",
+				CfdTransientTimeScheme.Backward => "backward",
+				_ => throw new ArgumentOutOfRangeException(nameof(transient.TimeScheme)),
+			};
+			values["MAX_VELOCITY"] = F(transient.MaximumVelocityMetersPerSecond);
 			values["CYCLE_DURATION"] = F(transient.CycleDurationSeconds);
 			values["PURGE_WRITE"] = I(checked((int)Math.Round(720.0 / transient.SolverAlignmentDegrees)) + 2);
 			values["TRANSIENT_FUNCTIONS"] = TransientFunctions(path);
@@ -242,8 +249,8 @@ public static class OpenFoamCaseGenerator
 				"U" => $"    type flowRateInletVelocity;\n    massFlowRate\n    {CfdTransientPulseGenerator.OpenFoamTable(pulse.MassFlow)};\n    rho rho;\n    rhoInlet {F(rhoGuess)};\n    value uniform (0 0 0);\n",
 				"p" => "    type zeroGradient;\n",
 				"T" => $"    type inletOutlet;\n    inletValue uniform {F(document.Solver.InletTemperatureK)};\n    value uniform {F(document.Solver.InletTemperatureK)};\n",
-				"k" => $"    type turbulentKineticEnergy;\n    intensity {F(document.Solver.TurbulenceIntensity)};\n    value uniform {F(k)};\n",
-				"omega" => $"    type turbulentOmega;\n    mixingLength {F(length)};\n    value uniform {F(omega)};\n",
+				"k" => $"    type inletOutlet;\n    inletValue uniform {F(k)};\n    value uniform {F(k)};\n",
+				"omega" => $"    type inletOutlet;\n    inletValue uniform {F(omega)};\n    value uniform {F(omega)};\n",
 				"nut" or "alphat" => "    type calculated;\n    value uniform 0;\n",
 				_ => throw new ArgumentOutOfRangeException(nameof(field)),
 			};
@@ -263,6 +270,16 @@ public static class OpenFoamCaseGenerator
 	private static string OutletBoundary(string field, CfdCaseDocument document) => field switch
 	{
 		"U" => "    type pressureInletOutletVelocity;\n    value uniform (0 0 0);\n",
+		"p" when document.AnalysisMode == CfdAnalysisMode.EngineTransient =>
+			$"    type waveTransmissive;\n"
+			+ "    field p;\n"
+			+ "    phi phi;\n"
+			+ "    rho rho;\n"
+			+ "    psi psi;\n"
+			+ $"    gamma {F(document.Solver.Fluid.Gamma)};\n"
+			+ $"    fieldInf {F(document.Solver.OutletPressurePa)};\n"
+			+ $"    lInf {F(document.EngineTransient!.OutletWaveRelaxationLengthMm / 1000.0)};\n"
+			+ $"    value uniform {F(document.Solver.OutletPressurePa)};\n",
 		"p" => $"    type fixedValue;\n    value uniform {F(document.Solver.OutletPressurePa)};\n",
 		"T" => $"    type inletOutlet;\n    inletValue uniform {F(document.Solver.InletTemperatureK)};\n    value uniform {F(document.Solver.InletTemperatureK)};\n",
 		"k" => "    type inletOutlet;\n    inletValue uniform 0.1;\n    value uniform 0.1;\n",

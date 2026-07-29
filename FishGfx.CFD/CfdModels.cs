@@ -88,6 +88,85 @@ public sealed record CfdMeshSettings
 	}
 }
 
+public enum CfdMeshQuality
+{
+	Preview,
+	Balanced,
+	Production,
+}
+
+public static class CfdMeshQualityPresets
+{
+	public static CfdMeshQuality Parse(string value) => value.ToLowerInvariant() switch
+	{
+		"preview" => CfdMeshQuality.Preview,
+		"balanced" => CfdMeshQuality.Balanced,
+		"production" => CfdMeshQuality.Production,
+		_ => throw new ArgumentException(
+			$"Unknown mesh quality '{value}'. Expected preview, balanced, or production."),
+	};
+
+	public static CfdMeshSettings Corsa(CfdMeshQuality quality) => quality switch
+	{
+		CfdMeshQuality.Preview => new CfdMeshSettings
+		{
+			CellsAcrossSmallestInlet = 8,
+			WallRefinementLevel = 0,
+			OpeningRefinementLevel = 0,
+			LayerCount = 0,
+			FirstLayerThicknessMm = 0.15,
+			MaximumCells = 250_000,
+		},
+		CfdMeshQuality.Balanced => new CfdMeshSettings
+		{
+			CellsAcrossSmallestInlet = 12,
+			WallRefinementLevel = 1,
+			OpeningRefinementLevel = 1,
+			LayerCount = 1,
+			FirstLayerThicknessMm = 0.15,
+			MaximumCells = 750_000,
+		},
+		CfdMeshQuality.Production => new CfdMeshSettings
+		{
+			FirstLayerThicknessMm = 0.15,
+		},
+		_ => throw new ArgumentOutOfRangeException(nameof(quality)),
+	};
+
+	public static string Name(CfdMeshQuality quality) => quality.ToString().ToLowerInvariant();
+
+	public static CfdEngineTransientSettings CorsaTransient(
+		CfdEngineTransientSettings settings,
+		CfdMeshQuality quality) => quality switch
+	{
+		CfdMeshQuality.Preview => settings with
+		{
+			MaximumTimeStepDegrees = 0.5,
+			MaximumCourantNumber = 0.2,
+			TimeScheme = CfdTransientTimeScheme.Euler,
+			MinimumCycles = 2,
+			MaximumCycles = 2,
+		},
+		CfdMeshQuality.Balanced => settings with
+		{
+			MaximumTimeStepDegrees = 0.25,
+			MaximumCourantNumber = 0.75,
+			TimeScheme = CfdTransientTimeScheme.Backward,
+			MinimumCycles = 3,
+			MaximumCycles = 4,
+		},
+		CfdMeshQuality.Production => settings with
+		{
+			MaximumTimeStepDegrees = 0.25,
+			MaximumCourantNumber = 0.5,
+			TimeScheme = CfdTransientTimeScheme.Backward,
+			MinimumCycles = 3,
+			MaximumCycles = 6,
+		},
+		_ => throw new ArgumentOutOfRangeException(nameof(quality)),
+	};
+}
+
 public sealed record CfdSolverSettings
 {
 	public double OutletPressurePa { get; init; } = 101325;
@@ -126,6 +205,13 @@ public enum TransientInitialisationMode
 {
 	Uniform,
 	CompatibleSteadyResult,
+	MappedSteadyPreview,
+}
+
+public enum CfdTransientTimeScheme
+{
+	Euler,
+	Backward,
 }
 
 public sealed record CfdCylinderAssignment(
@@ -137,7 +223,7 @@ public sealed record CfdEngineTransientSettings
 	public const string CorsaPresetId = "corsa-3500";
 	public const string PulsePresetId = "estimated-exhaust-v1";
 	public const string BoundaryModelLabel =
-		"Prescribed-flow inlets, fixed-static-pressure outlet, no turbine impedance model.";
+		"Prescribed-flow inlets, wave-transmissive 101325 Pa far-field outlet, no turbine impedance model.";
 	public const int PulseGeneratorVersion = 2;
 	public const int PeriodicityAlgorithmVersion = 1;
 	public double EngineDisplacementCc { get; init; } = 1364;
@@ -153,6 +239,9 @@ public sealed record CfdEngineTransientSettings
 	public double MinimumTimeStepDegrees { get; init; } = 0.00001;
 	public int CollapsedTimeStepPollLimit { get; init; } = 10;
 	public double MaximumCourantNumber { get; init; } = 0.5;
+	public CfdTransientTimeScheme TimeScheme { get; init; } = CfdTransientTimeScheme.Backward;
+	public double MaximumVelocityMetersPerSecond { get; init; } = 400;
+	public double OutletWaveRelaxationLengthMm { get; init; } = 10;
 	public int StartupRampCycles { get; init; } = 1;
 	public int MinimumCycles { get; init; } = 3;
 	public int MaximumCycles { get; init; } = 6;
@@ -185,6 +274,8 @@ public sealed record CfdEngineTransientSettings
 			MaximumTimeStepDegrees,
 			MinimumTimeStepDegrees,
 			MaximumCourantNumber,
+			MaximumVelocityMetersPerSecond,
+			OutletWaveRelaxationLengthMm,
 			FlowWaveformNrmseTolerance,
 			FlowWaveformScaleFloorKgPerSecond,
 			PressureWaveformNrmseTolerance,
@@ -195,6 +286,7 @@ public sealed record CfdEngineTransientSettings
 			DomainMassFloorKg,
 		};
 		if (positive.Any(value => !double.IsFinite(value) || value <= 0)
+			|| !Enum.IsDefined(TimeScheme)
 			|| !double.IsFinite(EventStartDegreesAfterFiring)
 			|| !double.IsFinite(EventEndDegreesAfterFiring)
 			|| EventStartDegreesAfterFiring < 0
@@ -206,6 +298,7 @@ public sealed record CfdEngineTransientSettings
 			|| MinimumTimeStepDegrees >= MaximumTimeStepDegrees
 			|| CollapsedTimeStepPollLimit < 1
 			|| StartupRampCycles < 1
+			|| MaximumVelocityMetersPerSecond <= 0
 			|| !DividesCycle(PulseTableStepDegrees)
 			|| !DividesCycle(SolverAlignmentDegrees)
 			|| string.IsNullOrWhiteSpace(PulsePreset))
@@ -224,7 +317,8 @@ public sealed record CfdEngineTransientSettings
 		{
 			throw new InvalidDataException("The firing order must be a permutation of one-to-one cylinder assignments.");
 		}
-		if (InitialisationMode == TransientInitialisationMode.CompatibleSteadyResult
+		if ((InitialisationMode is TransientInitialisationMode.CompatibleSteadyResult
+			or TransientInitialisationMode.MappedSteadyPreview)
 			&& (string.IsNullOrWhiteSpace(InitialSteadySolveHash) || InitialSteadyCaseId is null))
 		{
 			throw new InvalidDataException("Compatible steady initialization requires a steady case ID and SolveHash.");

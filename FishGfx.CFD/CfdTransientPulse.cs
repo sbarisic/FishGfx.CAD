@@ -74,7 +74,8 @@ public static class CfdTransientPulseGenerator
 			double rawIntegral = TrapezoidalIntegral(oneCycleRaw, sampleTime);
 			if (!(rawIntegral > 0)) throw new InvalidDataException("The transient pulse has zero discrete area.");
 			double scale = eventMass / rawIntegral;
-			double startupMassFlow = settings.InitialisationMode == TransientInitialisationMode.CompatibleSteadyResult
+			double startupMassFlow = (settings.InitialisationMode is TransientInitialisationMode.CompatibleSteadyResult
+				or TransientInitialisationMode.MappedSteadyPreview)
 				? solver.RunnerMassFlows.TryGetValue(assignment.ComponentId, out double configured)
 					? configured
 					: solver.TotalMassFlowKgPerSecond / settings.CylinderAssignments.Count

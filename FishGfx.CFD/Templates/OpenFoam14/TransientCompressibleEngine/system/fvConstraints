@@ -4,3 +4,14 @@ FoamFile { format ascii; class dictionary; location "system"; object fvConstrain
 // during the startup pressure wave. This is the Foundation 14 limitTemperature
 // constraint used by its compressible-fluid tutorials.
 #includeConstraint limitTemperature(min=200, max=2500)
+
+// Guard the wall functions and pressure correction from a nonphysical,
+// single-cell startup spike. The default is above the expected Corsa pulse
+// velocity and therefore does not clip the prescribed inlet waveform.
+limitVelocity
+{
+    type            limitMag;
+    cellZone        all;
+    field           U;
+    max             {{MAX_VELOCITY}};
+}

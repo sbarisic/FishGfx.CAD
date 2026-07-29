@@ -20,6 +20,7 @@ internal static class Program
 				"inspect" when args.Length == 2 => Inspect(args[1]),
 				"create" when args.Length is 3 or 4 => Create(args[1], args[2], args.Length == 4 ? args[3] : null),
 				"create-transient" when args.Length >= 3 => CreateTransient(args),
+				"set-quality" when args.Length == 3 => SetQuality(args[1], args[2]),
 				"prepare" when args.Length == 2 => await Prepare(args[1]),
 				"run" when args.Length == 2 => await Run(args[1]),
 				"run-view" when args.Length == 2 => await RunAndView(args[1]),
@@ -40,10 +41,17 @@ internal static class Program
 		string casePath = args[2];
 		string preset = CfdEngineTransientSettings.CorsaPresetId;
 		string? steadyCasePath = null;
+		CfdMeshQuality quality = CfdMeshQuality.Production;
+		bool qualityWasSpecified = false;
 		for (int index = 3; index < args.Length; ++index)
 		{
 			if (args[index] == "--preset" && index + 1 < args.Length) preset = args[++index];
 			else if (args[index] == "--initial-steady" && index + 1 < args.Length) steadyCasePath = args[++index];
+			else if (args[index] == "--quality" && index + 1 < args.Length)
+			{
+				quality = CfdMeshQualityPresets.Parse(args[++index]);
+				qualityWasSpecified = true;
+			}
 			else throw new ArgumentException($"Unknown create-transient argument '{args[index]}'.");
 		}
 		if (!string.Equals(preset, CfdEngineTransientSettings.CorsaPresetId, StringComparison.Ordinal))
@@ -63,8 +71,9 @@ internal static class Program
 			CfdCaseDocument steady = CfdCaseStore.Load(steadyCasePath);
 			if (steady.AnalysisMode != CfdAnalysisMode.Steady
 				|| steady.Results.Steady == null
+				|| steady.Results.Steady.Status != CfdRunStatus.Converged
 				|| string.IsNullOrWhiteSpace(steady.SolveHash))
-				throw new InvalidDataException("The initialization case is not a completed compatible steady case.");
+				throw new InvalidDataException("The initialization case is not a converged compatible steady case.");
 			if (steady.PackageFileHash != package.PackageFileHash
 				|| steady.SourceHash != package.ComputeSourceHash(path.Id)
 				|| steady.SelectedGasPathId != path.Id
@@ -86,8 +95,16 @@ internal static class Program
 			InitialSteadySolveHash = steadyHash,
 			InitialSteadyCaseId = steadyCaseId,
 		};
+		transient = CfdMeshQualityPresets.CorsaTransient(transient, quality);
 		transient.ValidateAgainst(path);
-		double diameter = inlets.Min(value => 2 * Math.Sqrt(value.Fingerprint.Area / Math.PI));
+		CfdMeshSettings requestedMesh = CfdMeshQualityPresets.Corsa(quality);
+		if (steadyInitialization != null && qualityWasSpecified && steadyInitialization.Mesh != requestedMesh)
+		{
+			transient = transient with
+			{
+				InitialisationMode = TransientInitialisationMode.MappedSteadyPreview,
+			};
+		}
 		string fullCase = Path.GetFullPath(casePath);
 		string relative = Path.GetRelativePath(Path.GetDirectoryName(fullCase)!, package.PackagePath);
 		CfdCaseDocument document = new()
@@ -98,16 +115,57 @@ internal static class Program
 			SourceHash = package.ComputeSourceHash(path.Id),
 			AnalysisMode = CfdAnalysisMode.EngineTransient,
 			EngineTransient = transient,
-			Mesh = steadyInitialization?.Mesh ?? new CfdMeshSettings
-			{
-				FirstLayerThicknessMm = preset == CfdEngineTransientSettings.CorsaPresetId
-					? 0.15
-					: CfdMeshSettings.DefaultFirstLayerThickness(diameter),
-			},
+			Mesh = steadyInitialization != null && !qualityWasSpecified
+				? steadyInitialization.Mesh
+				: requestedMesh,
 			Solver = steadyInitialization?.Solver ?? new CfdSolverSettings(),
 		};
 		CfdCaseStore.Save(fullCase, document);
 		Console.WriteLine($"Created {fullCase}");
+		return 0;
+	}
+
+	private static int SetQuality(string casePath, string qualityName)
+	{
+		string fullCase = Path.GetFullPath(casePath);
+		CfdCaseDocument document = CfdCaseStore.Load(fullCase);
+		if (document.AnalysisMode != CfdAnalysisMode.EngineTransient)
+			throw new InvalidDataException("Mesh quality presets currently apply to engine-transient cases.");
+		CfdMeshQuality quality = CfdMeshQualityPresets.Parse(qualityName);
+		CfdMeshSettings mesh = CfdMeshQualityPresets.Corsa(quality);
+		CfdEngineTransientSettings transient = document.EngineTransient!;
+		bool hasSteadyInitialization = transient.InitialisationMode is
+			TransientInitialisationMode.CompatibleSteadyResult or
+			TransientInitialisationMode.MappedSteadyPreview;
+		bool mappedSteady = hasSteadyInitialization && mesh != document.Mesh;
+		if (mappedSteady)
+		{
+			transient = transient with
+			{
+				InitialisationMode = quality == CfdMeshQuality.Production
+					? TransientInitialisationMode.CompatibleSteadyResult
+					: TransientInitialisationMode.MappedSteadyPreview,
+			};
+		}
+		transient = CfdMeshQualityPresets.CorsaTransient(transient, quality);
+		document = document with
+		{
+			Mesh = mesh,
+			EngineTransient = transient,
+			Toolchain = null,
+			MeshHash = null,
+			SolveHash = null,
+			CaptureHash = null,
+			ResultHash = null,
+			Results = new CfdCaseResults(),
+		};
+		CfdCaseStore.Save(fullCase, document);
+		Console.WriteLine($"Set {fullCase} to {CfdMeshQualityPresets.Name(quality)} mesh quality.");
+		if (mappedSteady && quality != CfdMeshQuality.Production)
+		{
+			Console.WriteLine(
+				"The converged production steady field will be mapped onto the lower-quality mesh before transient startup.");
+		}
 		return 0;
 	}
 
@@ -627,7 +685,8 @@ internal static class Program
 	{
 		Console.Error.WriteLine("FishGfx.CFD inspect <gas.fggas>");
 		Console.Error.WriteLine("FishGfx.CFD create <gas.fggas> <case.fgcfd> [path-id]");
-		Console.Error.WriteLine("FishGfx.CFD create-transient <gas.fggas> <case.fgcfd> --preset corsa-3500 [--initial-steady <case.fgcfd>]");
+		Console.Error.WriteLine("FishGfx.CFD create-transient <gas.fggas> <case.fgcfd> --preset corsa-3500 [--quality preview|balanced|production] [--initial-steady <case.fgcfd>]");
+		Console.Error.WriteLine("FishGfx.CFD set-quality <case.fgcfd> preview|balanced|production");
 		Console.Error.WriteLine("FishGfx.CFD prepare <case.fgcfd>");
 		Console.Error.WriteLine("FishGfx.CFD run <case.fgcfd>");
 		Console.Error.WriteLine("FishGfx.CFD run-view <case.fgcfd>");
