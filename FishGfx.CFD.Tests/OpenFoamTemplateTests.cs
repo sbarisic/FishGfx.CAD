@@ -7,6 +7,47 @@ namespace FishGfx.CFD.Tests;
 public sealed class OpenFoamTemplateTests
 {
 	[Fact]
+	public void GeneratesAmdGpuPetscSolversForEveryEligibleField()
+	{
+		string directory = Path.Combine(Path.GetTempPath(), $"fishgfx-gpu-foam-{Guid.NewGuid():N}");
+		Directory.CreateDirectory(directory);
+		try
+		{
+			string stl = Path.Combine(directory, "source.stl");
+			File.WriteAllText(stl, "solid walls\nendsolid walls\n");
+			GasOpeningFingerprint fingerprint = new(1000, [0, 0, 0], [0, 0, 1], 1, 100, [], [], "plane");
+			GasPathManifest path = new("runner", "runner", "Runner", "component",
+			[
+				new("start", "inlet", "inlet", "runner", fingerprint),
+				new("end", "outlet", "outlet", "runner", fingerprint),
+			]);
+			GasPackageManifest manifest = new("fishgfx.gas-patches", 1, "mm", new string('0', 64),
+				CadPatchMatchingPolicy.Version1, [path]);
+			CfdCaseDocument document = new() { SelectedGasPathId = path.Id };
+			string target = Path.Combine(directory, "case");
+			OpenFoamCaseGenerator.Generate(target, document,
+				new("fixture", "", "", [], [], manifest),
+				new(stl, new(-.1, -.1, -.1), new(.1, .1, .1), new(0, 0, 0), 40));
+
+			string control = File.ReadAllText(Path.Combine(target, "system", "controlDict"));
+			Assert.Contains("libs (\"libpetscFoam.so\")", control);
+			string solution = File.ReadAllText(Path.Combine(target, "system", "fvSolution"));
+			Assert.Contains("solver petsc", solution);
+			Assert.Contains("pc_hypre_type \"boomeramg\"", solution);
+			Assert.Contains("ksp_type \"bcgs\"", solution);
+			Assert.Contains("vec_type \"hip\"", solution);
+			Assert.Contains("mat_type \"aijhipsparse\"", solution);
+			Assert.Contains("\"(rho|U|k|omega|e|h)\"", solution);
+			Assert.Contains("matrix auto", solution);
+			Assert.Contains("preconditioner auto", solution);
+			string options = File.ReadAllText(Path.Combine(target, "system", "petscOptions"));
+			Assert.Contains("-device_select 0", options);
+			Assert.Contains("-log_view", options);
+		}
+		finally { Directory.Delete(directory, true); }
+	}
+
+	[Fact]
 	public void GeneratesTransientBackwardTemplateAndDirectionAwareInlets()
 	{
 		string directory = Path.Combine(Path.GetTempPath(), $"fishgfx-transient-foam-{Guid.NewGuid():N}");
@@ -32,6 +73,7 @@ public sealed class OpenFoamTemplateTests
 				SelectedGasPathId = path.Id,
 				AnalysisMode = CfdAnalysisMode.EngineTransient,
 				EngineTransient = transient,
+				Compute = CfdComputeSettings.For(CfdComputeBackend.CpuNative),
 			};
 			string target = Path.Combine(directory, "case");
 			OpenFoamCaseGenerator.Generate(target, document,

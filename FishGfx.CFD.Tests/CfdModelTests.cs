@@ -1,4 +1,6 @@
 using FishGfx.CFD;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Xunit;
 
 namespace FishGfx.CFD.Tests;
@@ -81,6 +83,61 @@ public sealed class CfdModelTests
 		Assert.Equal(
 			CfdCaseStore.ComputeSolveHash(discard, toolchain, meshHash),
 			CfdCaseStore.ComputeSolveHash(retain, toolchain, meshHash));
+	}
+
+	[Fact]
+	public void ComputeBackendChangesSolveHashButNotMeshHash()
+	{
+		CfdCaseDocument gpu = new() { SourceHash = new string('a', 64) };
+		CfdCaseDocument cpu = gpu with
+		{
+			Compute = CfdComputeSettings.For(CfdComputeBackend.CpuNative),
+		};
+		CfdToolchainFingerprint cpuToolchain = Toolchain("14") with
+		{
+			ComputeBackend = CfdComputeBackend.CpuNative,
+			SolverProfile = CfdComputeSettings.CpuSolverProfile,
+		};
+		CfdToolchainFingerprint gpuToolchain = cpuToolchain with
+		{
+			ComputeBackend = CfdComputeBackend.AmdGpuPetsc,
+			SolverProfile = CfdComputeSettings.AmdGpuSolverProfile,
+			GpuArchitecture = "gfx1201",
+			PetscGitCommit = "abc123",
+			AdapterSha256 = new string('c', 64),
+		};
+		string cpuMesh = CfdCaseStore.ComputeMeshHash(cpu, cpuToolchain);
+		string gpuMesh = CfdCaseStore.ComputeMeshHash(gpu, gpuToolchain);
+		Assert.Equal(cpuMesh, gpuMesh);
+		Assert.NotEqual(
+			CfdCaseStore.ComputeSolveHash(cpu, cpuToolchain, cpuMesh),
+			CfdCaseStore.ComputeSolveHash(gpu, gpuToolchain, gpuMesh));
+	}
+
+	[Fact]
+	public void V3CaseMigratesToRequiredAmdGpuWithoutDiscardingResults()
+	{
+		string path = Path.Combine(Path.GetTempPath(), $"fishgfx-cfd-v3-{Guid.NewGuid():N}.fgcfd");
+		try
+		{
+			CfdCaseDocument source = new()
+			{
+				Results = new CfdCaseResults
+				{
+					Steady = new CfdResultSummary { Status = CfdRunStatus.Converged },
+				},
+			};
+			JsonObject root = JsonSerializer.SerializeToNode(source, CfdJson.Options)!.AsObject();
+			root["version"] = 3;
+			root.Remove("compute");
+			File.WriteAllText(path, root.ToJsonString(CfdJson.Options));
+
+			CfdCaseDocument migrated = CfdCaseStore.Load(path);
+			Assert.Equal(4, migrated.Version);
+			Assert.Equal(CfdComputeBackend.AmdGpuPetsc, migrated.Compute.Backend);
+			Assert.Equal(CfdRunStatus.Converged, migrated.Results.Steady!.Status);
+		}
+		finally { File.Delete(path); }
 	}
 
 	private static CfdToolchainFingerprint Toolchain(string version) => new(

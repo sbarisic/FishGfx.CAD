@@ -224,6 +224,40 @@ public sealed record CfdSolverSettings
 	}
 }
 
+public enum CfdComputeBackend
+{
+	CpuNative,
+	AmdGpuPetsc,
+}
+
+public sealed record CfdComputeSettings
+{
+	public const string AmdGpuSolverProfile = "petsc-hip-all-v1";
+	public const string CpuSolverProfile = "openfoam-native-v1";
+	public CfdComputeBackend Backend { get; init; } = CfdComputeBackend.AmdGpuPetsc;
+	public int DeviceIndex { get; init; }
+	public string SolverProfile { get; init; } = AmdGpuSolverProfile;
+
+	public void Validate()
+	{
+		if (DeviceIndex < 0 || string.IsNullOrWhiteSpace(SolverProfile))
+			throw new InvalidDataException("The CFD compute settings are invalid.");
+		string expected = Backend == CfdComputeBackend.AmdGpuPetsc
+			? AmdGpuSolverProfile
+			: CpuSolverProfile;
+		if (!string.Equals(SolverProfile, expected, StringComparison.Ordinal))
+			throw new InvalidDataException($"Compute backend {Backend} requires solver profile '{expected}'.");
+	}
+
+	public static CfdComputeSettings For(CfdComputeBackend backend) => new()
+	{
+		Backend = backend,
+		SolverProfile = backend == CfdComputeBackend.AmdGpuPetsc
+			? AmdGpuSolverProfile
+			: CpuSolverProfile,
+	};
+}
+
 public enum CfdAnalysisMode
 {
 	Steady,
@@ -515,7 +549,38 @@ public sealed record CfdToolchainFingerprint(
 	string TemplateVersion,
 	int SnappySettingsVersion,
 	int MatchingPolicyVersion,
-	int PostProcessingVersion);
+	int PostProcessingVersion,
+	CfdComputeBackend ComputeBackend = CfdComputeBackend.CpuNative,
+	string SolverProfile = CfdComputeSettings.CpuSolverProfile,
+	string? GpuName = null,
+	string? GpuPciAddress = null,
+	int? GpuDeviceIndex = null,
+	string? GpuArchitecture = null,
+	string? RocmVersion = null,
+	string? HipVersion = null,
+	string? PetscGitCommit = null,
+	string? PetscConfigurationSha256 = null,
+	string? HypreVersion = null,
+	string? HypreConfiguration = null,
+	string? AdapterGitCommit = null,
+	string? AdapterPortVersion = null,
+	string? AdapterAbi = null,
+	string? AdapterSha256 = null,
+	string? GpuManifestSha256 = null,
+	string? ComputeEnvironmentScriptPath = null,
+	string? ComputeEnvironmentScriptSha256 = null);
+
+public sealed record CfdComputeRunSummary
+{
+	public CfdComputeBackend Backend { get; init; }
+	public string SolverProfile { get; init; } = string.Empty;
+	public string? DeviceName { get; init; }
+	public string? DeviceArchitecture { get; init; }
+	public double FoamRunWallSeconds { get; init; }
+	public int LinearSolveCount { get; init; }
+	public int LinearIterations { get; init; }
+	public string? PetscLogPath { get; init; }
+}
 
 public enum CfdRunStatus
 {
@@ -643,6 +708,7 @@ public sealed record CfdCaseResults
 	public CfdResultSummary? Steady { get; init; }
 	public CfdTransientResultReference? Transient { get; init; }
 	public CfdTransientResultSummary? TransientSummary { get; init; }
+	public CfdComputeRunSummary? Compute { get; init; }
 }
 
 public sealed record CfdResidualSample(
@@ -655,7 +721,7 @@ public sealed record CfdResidualSample(
 public sealed record CfdCaseDocument
 {
 	public const string SchemaName = "fishgfx.cfd-case";
-	public const int CurrentVersion = 3;
+	public const int CurrentVersion = 4;
 	public string Schema { get; init; } = SchemaName;
 	public int Version { get; init; } = CurrentVersion;
 	public Guid CaseId { get; init; } = Guid.NewGuid();
@@ -668,6 +734,7 @@ public sealed record CfdCaseDocument
 	public CfdAnalysisMode AnalysisMode { get; init; }
 	public CfdMeshSettings Mesh { get; init; } = new();
 	public CfdSolverSettings Solver { get; init; } = new();
+	public CfdComputeSettings Compute { get; init; } = new();
 	public CfdEngineOperatingPoint? OperatingPoint { get; init; }
 	public CfdTurbineBoundarySettings TurbineBoundary { get; init; } = new();
 	public CfdEngineTransientSettings? EngineTransient { get; init; }
@@ -684,6 +751,7 @@ public sealed record CfdCaseDocument
 	{
 		Mesh.Validate();
 		Solver.Validate();
+		Compute.Validate();
 		TurbineBoundary.Validate();
 		OperatingPoint?.Validate();
 		ResultStorage.Validate();

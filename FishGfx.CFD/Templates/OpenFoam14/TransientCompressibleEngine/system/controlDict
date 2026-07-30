@@ -1,4 +1,5 @@
 FoamFile { format ascii; class dictionary; location "system"; object controlDict; }
+{{SOLVER_LIBRARIES}}
 solver fluid;
 startFrom startTime;
 startTime 0;

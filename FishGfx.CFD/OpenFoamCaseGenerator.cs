@@ -14,8 +14,8 @@ public sealed record CfdPreparedGeometry(
 
 public static class OpenFoamCaseGenerator
 {
-	public const string TemplateVersion = "openfoam14-steady-compressible-7";
-	public const string TransientTemplateVersion = "openfoam14-transient-engine-31";
+	public const string TemplateVersion = "openfoam14-steady-compressible-8";
+	public const string TransientTemplateVersion = "openfoam14-transient-engine-32";
 	public const int PostProcessingVersion = 9;
 
 	public static string TemplateVersionFor(CfdAnalysisMode mode) => mode switch
@@ -62,6 +62,13 @@ public static class OpenFoamCaseGenerator
 			File.WriteAllText(
 				Path.Combine(caseDirectory, "constant", "turbinePressureVsQ.csv"),
 				CfdTurbineMaps.OpenFoamSolverCsv(curve),
+				new UTF8Encoding(false));
+		}
+		if (document.Compute.Backend == CfdComputeBackend.AmdGpuPetsc)
+		{
+			File.WriteAllText(
+				Path.Combine(caseDirectory, "system", "petscOptions"),
+				$"-device_select {document.Compute.DeviceIndex}\n-log_view ascii:petsc-performance.log\n-log_view_gpu_time 1\n",
 				new UTF8Encoding(false));
 		}
 		string triSurface = Path.Combine(caseDirectory, "constant", "triSurface");
@@ -144,6 +151,10 @@ public static class OpenFoamCaseGenerator
 			["MOMENTUM_TRANSPORT"] = UsesLaminarTurbinePreview(document)
 				? "simulationType laminar;"
 				: "simulationType RAS;\nRAS\n{\n    model kOmegaSST;\n    turbulence on;\n    printCoeffs on;\n}",
+			["SOLVER_LIBRARIES"] = document.Compute.Backend == CfdComputeBackend.AmdGpuPetsc
+				? "libs (\"libpetscFoam.so\");"
+				: string.Empty,
+			["LINEAR_SOLVERS"] = LinearSolvers(document),
 		};
 		if (document.AnalysisMode == CfdAnalysisMode.EngineTransient)
 		{
@@ -179,6 +190,128 @@ public static class OpenFoamCaseGenerator
 			throw new InvalidDataException("An OpenFOAM template token was not substituted.");
 		}
 		return content;
+	}
+
+	private static string LinearSolvers(CfdCaseDocument document)
+	{
+		if (document.Compute.Backend == CfdComputeBackend.CpuNative)
+		{
+			return document.AnalysisMode == CfdAnalysisMode.EngineTransient
+				? """
+				p
+				{
+				    solver PCG;
+				    preconditioner DIC;
+				    tolerance 1e-8;
+				    relTol 0.01;
+				}
+				pFinal { $p; relTol 0; }
+				Phi { $p; }
+				"(rho|U|k|omega|e|h)"
+				{
+				    solver smoothSolver;
+				    smoother symGaussSeidel;
+				    tolerance 1e-7;
+				    relTol 0.05;
+				}
+				"(rho|U|k|omega|e|h)Final"
+				{
+				    solver smoothSolver;
+				    smoother symGaussSeidel;
+				    tolerance 1e-7;
+				    relTol 0;
+				}
+				"""
+				: """
+				p
+				{
+				    solver GAMG;
+				    smoother GaussSeidel;
+				    tolerance 1e-6;
+				    relTol 0.1;
+				}
+				pFinal { $p; relTol 0; }
+				Phi { $p; }
+				"(rho|U|k|omega|e|h)"
+				{
+				    solver smoothSolver;
+				    smoother symGaussSeidel;
+				    tolerance 1e-6;
+				    relTol 0.1;
+				}
+				"(rho|U|k|omega|e|h)Final"
+				{
+				    solver smoothSolver;
+				    smoother symGaussSeidel;
+				    tolerance 1e-6;
+				    relTol 0.1;
+				}
+				""";
+		}
+
+		string pressureTolerance = document.AnalysisMode == CfdAnalysisMode.EngineTransient ? "1e-8" : "1e-6";
+		string pressureRelative = document.AnalysisMode == CfdAnalysisMode.EngineTransient ? "0.01" : "0.1";
+		string transportTolerance = document.AnalysisMode == CfdAnalysisMode.EngineTransient ? "1e-7" : "1e-6";
+		string transportRelative = document.AnalysisMode == CfdAnalysisMode.EngineTransient ? "0.05" : "0.1";
+		return $$"""
+			p
+			{
+			    solver petsc;
+			    petsc
+			    {
+			        options
+			        {
+			            ksp_type "cg";
+			            pc_type "hypre";
+			            pc_hypre_type "boomeramg";
+			            vec_type "hip";
+			            mat_type "aijhipsparse";
+			            ksp_error_if_not_converged "true";
+			        }
+			        caching { matrix auto; preconditioner auto; }
+			    }
+			    tolerance {{pressureTolerance}};
+			    relTol {{pressureRelative}};
+			}
+			pFinal { $p; relTol 0; }
+			Phi { $p; }
+			"(rho|U|k|omega|e|h)"
+			{
+			    solver petsc;
+			    petsc
+			    {
+			        options
+			        {
+			            ksp_type "bcgs";
+			            pc_type "jacobi";
+			            vec_type "hip";
+			            mat_type "aijhipsparse";
+			            ksp_error_if_not_converged "true";
+			        }
+			        caching { matrix auto; preconditioner auto; }
+			    }
+			    tolerance {{transportTolerance}};
+			    relTol {{transportRelative}};
+			}
+			"(rho|U|k|omega|e|h)Final"
+			{
+			    solver petsc;
+			    petsc
+			    {
+			        options
+			        {
+			            ksp_type "bcgs";
+			            pc_type "jacobi";
+			            vec_type "hip";
+			            mat_type "aijhipsparse";
+			            ksp_error_if_not_converged "true";
+			        }
+			        caching { matrix auto; preconditioner auto; }
+			    }
+			    tolerance {{transportTolerance}};
+			    relTol 0;
+			}
+			""";
 	}
 
 	public static bool UsesLaminarTurbinePreview(CfdCaseDocument document) =>

@@ -25,6 +25,9 @@ internal static class Program
 				"set-engine-preset" when args.Length == 3 => SetEnginePreset(args[1], args[2]),
 				"set-turbine-preset" when args.Length == 3 => SetTurbinePreset(args[1], args[2]),
 				"set-cam-window" when args.Length == 4 => SetCamWindow(args[1], args[2], args[3]),
+				"set-compute" when args.Length == 3 => SetCompute(args[1], args[2]),
+				"gpu-doctor" when args.Length == 1 => await GpuDoctor(),
+				"benchmark-compute" when args.Length is 2 or 4 => await BenchmarkCompute(args),
 				"prepare" when args.Length == 2 => await Prepare(args[1]),
 				"run" when args.Length == 2 => await Run(args[1]),
 				"run-view" when args.Length == 2 => await RunAndView(args[1]),
@@ -304,6 +307,157 @@ internal static class Program
 		return 0;
 	}
 
+	private static int SetCompute(string casePath, string backendName)
+	{
+		CfdComputeBackend backend = backendName.ToLowerInvariant() switch
+		{
+			"amd-gpu" => CfdComputeBackend.AmdGpuPetsc,
+			"cpu" => CfdComputeBackend.CpuNative,
+			_ => throw new ArgumentException("Compute backend must be 'amd-gpu' or 'cpu'."),
+		};
+		string fullCase = Path.GetFullPath(casePath);
+		CfdCaseDocument document = CfdCaseStore.Load(fullCase);
+		document = ClearComputedResults(document with { Compute = CfdComputeSettings.For(backend) });
+		CfdCaseStore.Save(fullCase, document);
+		Console.WriteLine($"Set {fullCase} compute backend to {backend}.");
+		return 0;
+	}
+
+	private static async Task<int> GpuDoctor()
+	{
+		WslOpenFoamEnvironment environment = await WslOpenFoamEnvironment.DetectAsync(
+			CfdAnalysisMode.Steady,
+			CfdComputeSettings.For(CfdComputeBackend.AmdGpuPetsc));
+		CfdToolchainFingerprint value = environment.Fingerprint;
+		Console.WriteLine("AMD GPU toolchain is ready.");
+		Console.WriteLine($"GPU: {value.GpuName} ({value.GpuArchitecture}), device {value.GpuDeviceIndex}");
+		Console.WriteLine($"ROCm/HIP: {value.RocmVersion} / {value.HipVersion}");
+		Console.WriteLine($"PETSc: {value.PetscGitCommit}; Hypre: {value.HypreVersion}");
+		Console.WriteLine($"Adapter: {value.AdapterPortVersion} ({value.AdapterSha256})");
+		return 0;
+	}
+
+	private static async Task<int> BenchmarkCompute(string[] args)
+	{
+		int repeat = 3;
+		if (args.Length == 4)
+		{
+			if (args[2] != "--repeat" || !int.TryParse(args[3], out repeat) || repeat < 1 || repeat > 10)
+				throw new ArgumentException("--repeat must be an integer from 1 through 10.");
+		}
+		string sourcePath = Path.GetFullPath(args[1]);
+		CfdCaseDocument source = CfdCaseStore.Load(sourcePath);
+		await WslOpenFoamEnvironment.DetectAsync(
+			source.AnalysisMode,
+			CfdComputeSettings.For(CfdComputeBackend.AmdGpuPetsc));
+
+		List<CfdComputeBenchmarkRun> runs = [];
+		List<string> temporaryCases = [];
+		string? cpuCase = null;
+		string? gpuCase = null;
+		bool complete = false;
+		try
+		{
+			foreach (CfdComputeBackend backend in new[] { CfdComputeBackend.CpuNative, CfdComputeBackend.AmdGpuPetsc })
+			{
+				for (int index = 0; index < repeat; ++index)
+				{
+					string temporary = sourcePath + $".benchmark-{backend}-{index}-{Guid.NewGuid():N}.fgcfd";
+					temporaryCases.Add(temporary);
+					CfdCaseDocument candidate = ClearComputedResults(source with
+					{
+						CaseId = Guid.NewGuid(),
+						Compute = CfdComputeSettings.For(backend),
+					});
+					CfdCaseStore.Save(temporary, candidate);
+					Console.WriteLine($"Benchmark {backend}, repeat {index + 1}/{repeat}.");
+					await Run(temporary);
+					CfdCaseDocument finished = CfdCaseStore.Load(temporary);
+					CfdComputeRunSummary summary = finished.Results.Compute
+						?? throw new InvalidDataException("The benchmark run did not record compute timing.");
+					if (!(summary.FoamRunWallSeconds > 0))
+						throw new InvalidDataException("The benchmark run did not record a positive foamRun duration.");
+					CfdRunStatus status = finished.AnalysisMode == CfdAnalysisMode.Steady
+						? finished.Results.Steady?.Status ?? CfdRunStatus.FatalError
+						: finished.Results.TransientSummary?.Status ?? CfdRunStatus.FatalError;
+					if (status is CfdRunStatus.FatalError or CfdRunStatus.Cancelled or CfdRunStatus.TimeStepCollapse)
+						throw new InvalidDataException($"The {backend} benchmark run failed with {status}.");
+					runs.Add(new(backend, index + 1, status, summary.FoamRunWallSeconds,
+						summary.LinearSolveCount, summary.LinearIterations));
+					if (index == repeat - 1)
+					{
+						if (backend == CfdComputeBackend.CpuNative) cpuCase = temporary;
+						else gpuCase = temporary;
+					}
+				}
+			}
+
+			double cpuMedian = Median(runs.Where(value => value.Backend == CfdComputeBackend.CpuNative)
+				.Select(value => value.FoamRunWallSeconds));
+			double gpuMedian = Median(runs.Where(value => value.Backend == CfdComputeBackend.AmdGpuPetsc)
+				.Select(value => value.FoamRunWallSeconds));
+			double speedup = cpuMedian / gpuMedian;
+			CfdCaseDocument cpu = CfdCaseStore.Load(cpuCase!);
+			CfdCaseDocument gpu = CfdCaseStore.Load(gpuCase!);
+			CfdComputeEquivalence equivalence = await CfdComputeEquivalenceChecker.CompareAsync(
+				cpuCase!, cpu, gpuCase!, gpu);
+			bool passed = speedup >= 1.25 && equivalence.Passed;
+			CfdComputeBenchmarkReport report = new(
+				"fishgfx.cfd-compute-benchmark", 1, DateTimeOffset.UtcNow, sourcePath,
+				runs, cpuMedian, gpuMedian, speedup, 1.25, equivalence, passed);
+			string reportPath = sourcePath + ".compute-benchmark.json";
+			WriteJsonAtomically(reportPath, report);
+			Console.WriteLine(FormattableString.Invariant(
+				$"CPU median {cpuMedian:R} s; GPU median {gpuMedian:R} s; speedup {speedup:R}x; equivalence {equivalence.Passed}."));
+			Console.WriteLine($"Benchmark report: {reportPath}");
+			complete = true;
+			return passed ? 0 : 2;
+		}
+		finally
+		{
+			if (complete)
+			{
+				foreach (string path in temporaryCases) DeleteBenchmarkArtifacts(path);
+			}
+			else if (temporaryCases.Count > 0)
+			{
+				Console.Error.WriteLine($"Benchmark artifacts retained for diagnosis: {temporaryCases[^1]}");
+			}
+		}
+	}
+
+	private static double Median(IEnumerable<double> values)
+	{
+		double[] ordered = values.Order().ToArray();
+		if (ordered.Length == 0) throw new InvalidDataException("The benchmark has no samples.");
+		return ordered.Length % 2 == 1
+			? ordered[ordered.Length / 2]
+			: (ordered[ordered.Length / 2 - 1] + ordered[ordered.Length / 2]) * 0.5;
+	}
+
+	private static void WriteJsonAtomically<T>(string path, T value)
+	{
+		string temporary = path + $".{Guid.NewGuid():N}.tmp";
+		byte[] bytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(value, CfdJson.Options);
+		using (FileStream output = new(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+		{
+			output.Write(bytes);
+			output.Flush(true);
+		}
+		File.Move(temporary, path, true);
+	}
+
+	private static void DeleteBenchmarkArtifacts(string casePath)
+	{
+		string full = Path.GetFullPath(casePath);
+		File.Delete(full);
+		foreach (string suffix in new[] { ".work", ".results" })
+		{
+			string directory = full + suffix;
+			if (Directory.Exists(directory)) Directory.Delete(directory, true);
+		}
+	}
+
 	private static double ParseFinite(string value, string name)
 	{
 		if (!double.TryParse(value, System.Globalization.NumberStyles.Float,
@@ -404,7 +558,8 @@ internal static class Program
 			Console.WriteLine($"CacheHit: {document.SolveHash}");
 			return enriched.Status == CfdRunStatus.Converged ? 0 : 2;
 		}
-		WslOpenFoamEnvironment environment = await WslOpenFoamEnvironment.DetectAsync(document.AnalysisMode);
+		WslOpenFoamEnvironment environment = await WslOpenFoamEnvironment.DetectAsync(
+			document.AnalysisMode, document.Compute);
 		WslOpenFoamRunner runner = new(environment);
 		OpenFoamRunResult result = await runner.RunAsync(
 			work,
@@ -437,7 +592,7 @@ internal static class Program
 		}
 		document = document with
 		{
-			Results = document.Results with { Steady = summary },
+			Results = document.Results with { Steady = summary, Compute = result.Compute },
 		};
 		CfdCaseStore.Save(casePath, document);
 		Console.WriteLine($"{result.Status}: {result.LogPath}");
@@ -499,7 +654,8 @@ internal static class Program
 		}
 		else
 		{
-			WslOpenFoamEnvironment environment = await WslOpenFoamEnvironment.DetectAsync(document.AnalysisMode);
+			WslOpenFoamEnvironment environment = await WslOpenFoamEnvironment.DetectAsync(
+				document.AnalysisMode, document.Compute);
 			WslOpenFoamRunner runner = new(environment);
 			run = await runner.RunAsync(
 				work,
@@ -522,6 +678,7 @@ internal static class Program
 						ModelLabel = BoundaryModelLabel(document),
 						Diagnostic = diagnostic,
 					},
+					Compute = run.Compute,
 				},
 			};
 			CfdCaseStore.Save(fullCase, document);
@@ -633,6 +790,7 @@ internal static class Program
 						? $"Cycle {acceptedCycle} satisfies every periodicity criterion."
 						: $"Cycle {acceptedCycle} remains viewable but did not satisfy every periodicity criterion.",
 				},
+				Compute = run.Compute ?? document.Results.Compute,
 			},
 		};
 		CfdCaseStore.Save(fullCase, document);
@@ -953,7 +1111,8 @@ internal static class Program
 			package,
 			document.SelectedGasPathId,
 			work);
-		WslOpenFoamEnvironment environment = await WslOpenFoamEnvironment.DetectAsync(document.AnalysisMode);
+		WslOpenFoamEnvironment environment = await WslOpenFoamEnvironment.DetectAsync(
+			document.AnalysisMode, document.Compute);
 		string meshHash = CfdCaseStore.ComputeMeshHash(document, environment.Fingerprint);
 		string solveHash = CfdCaseStore.ComputeSolveHash(document, environment.Fingerprint, meshHash);
 		string? captureHash = document.AnalysisMode == CfdAnalysisMode.EngineTransient
@@ -984,6 +1143,9 @@ internal static class Program
 		Console.Error.WriteLine("FishGfx.CFD set-engine-preset <case.fgcfd> a14net-3500-zero-boost-v1");
 		Console.Error.WriteLine("FishGfx.CFD set-turbine-preset <case.fgcfd> garrett-g25-550-049-closed-proxy-v1");
 		Console.Error.WriteLine("FishGfx.CFD set-cam-window <case.fgcfd> <start-deg> <end-deg>");
+		Console.Error.WriteLine("FishGfx.CFD set-compute <case.fgcfd> amd-gpu|cpu");
+		Console.Error.WriteLine("FishGfx.CFD gpu-doctor");
+		Console.Error.WriteLine("FishGfx.CFD benchmark-compute <case.fgcfd> [--repeat 3]");
 		Console.Error.WriteLine("FishGfx.CFD prepare <case.fgcfd>");
 		Console.Error.WriteLine("FishGfx.CFD run <case.fgcfd>");
 		Console.Error.WriteLine("FishGfx.CFD run-view <case.fgcfd>");

@@ -1,29 +1,7 @@
 FoamFile { format ascii; class dictionary; location "system"; object fvSolution; }
 solvers
 {
-    p
-    {
-        solver PCG;
-        preconditioner DIC;
-        tolerance 1e-8;
-        relTol 0.01;
-    }
-    pFinal { $p; relTol 0; }
-    Phi { $p; }
-    "(rho|U|k|omega|e|h)"
-    {
-        solver smoothSolver;
-        smoother symGaussSeidel;
-        tolerance 1e-7;
-        relTol 0.05;
-    }
-    "(rho|U|k|omega|e|h)Final"
-    {
-        solver smoothSolver;
-        smoother symGaussSeidel;
-        tolerance 1e-7;
-        relTol 0;
-    }
+{{LINEAR_SOLVERS}}
 }
 PIMPLE
 {

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace FishGfx.CFD;
 
@@ -10,10 +11,16 @@ public sealed record WslOpenFoamEnvironment(
 {
 	public static async Task<WslOpenFoamEnvironment> DetectAsync(
 		CfdAnalysisMode analysisMode = CfdAnalysisMode.Steady,
+		CfdComputeSettings? compute = null,
 		string distribution = "Ubuntu",
 		string environmentScript = "/opt/openfoam14/etc/bashrc",
 		CancellationToken cancellationToken = default)
 	{
+		compute ??= CfdComputeSettings.For(CfdComputeBackend.CpuNative);
+		compute.Validate();
+		if (compute.Backend == CfdComputeBackend.AmdGpuPetsc)
+			return await CfdGpuToolchainDetector.DetectAsync(
+				analysisMode, compute, distribution, cancellationToken);
 		string command = $"test -f {Q(environmentScript)}; source {Q(environmentScript)} >/dev/null 2>&1; "
 			+ "for c in foamRun surfaceCheck blockMesh surfaceFeatures snappyHexMesh checkMesh foamPostProcess foamToVTK; do command -v \"$c\" >/dev/null || { echo missing-command:$c >&2; exit 41; }; done; "
 			+ "printf '%s-%s\\n%s\\n%s\\n' \"${WM_PROJECT:-OpenFOAM}\" \"${WM_PROJECT_VERSION:-unknown}\" \"${WM_PROJECT_VERSION:-}\" \"${WM_OPTIONS:-}\"; "
@@ -42,7 +49,9 @@ public sealed record WslOpenFoamEnvironment(
 			OpenFoamCaseGenerator.TemplateVersionFor(analysisMode),
 			CfdMeshSettings.SettingsVersion,
 			FishGfx.Cad.CadPatchMatchingPolicy.Version1.Version,
-			OpenFoamCaseGenerator.PostProcessingVersion);
+			OpenFoamCaseGenerator.PostProcessingVersion,
+			compute.Backend,
+			compute.SolverProfile);
 		return new WslOpenFoamEnvironment(distribution, environmentScript, fingerprint);
 	}
 
@@ -83,7 +92,8 @@ public sealed record OpenFoamRunResult(
 	string WindowsResultDirectory,
 	string LogPath,
 	string Diagnostic,
-	int? AcceptedCycle = null);
+	int? AcceptedCycle = null,
+	CfdComputeRunSummary? Compute = null);
 
 public sealed class WslOpenFoamRunner
 {
@@ -160,6 +170,7 @@ public sealed class WslOpenFoamRunner
 			+ $"test ! -f \"$runtime/run.log\" || cp \"$runtime/run.log\" {WslOpenFoamEnvironment.Q(windowsWslPath + "/results/run.log")}; "
 			+ $"test ! -f \"$runtime/run-status.txt\" || cp \"$runtime/run-status.txt\" {WslOpenFoamEnvironment.Q(windowsWslPath + "/results/run-status.txt")}; "
 			+ $"test ! -f \"$runtime/accepted-cycle.txt\" || cp \"$runtime/accepted-cycle.txt\" {WslOpenFoamEnvironment.Q(windowsWslPath + "/results/accepted-cycle.txt")}; "
+			+ $"test ! -f \"$runtime/petsc-performance.log\" || cp \"$runtime/petsc-performance.log\" {WslOpenFoamEnvironment.Q(windowsWslPath + "/results/petsc-performance.log")}; "
 			+ $"test ! -d \"$runtime/VTK\" || {{ rm -rf {WslOpenFoamEnvironment.Q(windowsWslPath + "/results/VTK")}; cp -a \"$runtime/VTK\" {WslOpenFoamEnvironment.Q(windowsWslPath + "/results/VTK")}; }}; "
 			+ $"test ! -d \"$runtime/postProcessing\" || {{ rm -rf {WslOpenFoamEnvironment.Q(windowsWslPath + "/results/postProcessing")}; cp -a \"$runtime/postProcessing\" {WslOpenFoamEnvironment.Q(windowsWslPath + "/results/postProcessing")}; }}; "
 			+ $"test ! -d \"$runtime/mesh-cache/{meshHash}\" || {{ mkdir -p {WslOpenFoamEnvironment.Q(windowsWslPath + "/mesh-cache")}; rm -rf {WslOpenFoamEnvironment.Q(windowsWslPath + "/mesh-cache/" + meshHash)}; cp -a \"$runtime/mesh-cache/{meshHash}\" {WslOpenFoamEnvironment.Q(windowsWslPath + "/mesh-cache/" + meshHash)}; }}";
@@ -193,12 +204,44 @@ public sealed class WslOpenFoamRunner
 				["-d", environment.Distribution, "--", "bash", "-lc", WslOpenFoamEnvironment.EncodeBash(remove)],
 				CancellationToken.None);
 		}
+		string logPath = Path.Combine(results, "run.log");
 		return new OpenFoamRunResult(
 			status,
 			results,
-			Path.Combine(results, "run.log"),
+			logPath,
 			processResult.ExitCode == 0 ? statusText : processResult.StandardError.Trim(),
-			acceptedCycle);
+			acceptedCycle,
+			ReadComputeSummary(logPath, document.Compute, environment.Fingerprint));
+	}
+
+	private static CfdComputeRunSummary ReadComputeSummary(
+		string logPath,
+		CfdComputeSettings compute,
+		CfdToolchainFingerprint fingerprint)
+	{
+		string log = File.Exists(logPath) ? File.ReadAllText(logPath) : string.Empty;
+		Match wall = Regex.Matches(log, @"FGCFD_FOAMRUN_WALL_SECONDS:([0-9.eE+-]+)")
+			.Cast<Match>().LastOrDefault() ?? Match.Empty;
+		double.TryParse(
+			wall.Success ? wall.Groups[1].Value : "0",
+			System.Globalization.NumberStyles.Float,
+			System.Globalization.CultureInfo.InvariantCulture,
+			out double wallSeconds);
+		int iterations = Regex.Matches(log, @"No Iterations\s+([0-9]+)")
+			.Cast<Match>().Sum(value => int.TryParse(value.Groups[1].Value, out int count) ? count : 0);
+		return new CfdComputeRunSummary
+		{
+			Backend = compute.Backend,
+			SolverProfile = compute.SolverProfile,
+			DeviceName = fingerprint.GpuName,
+			DeviceArchitecture = fingerprint.GpuArchitecture,
+			FoamRunWallSeconds = wallSeconds,
+			LinearSolveCount = Regex.Matches(log, @"Solving for ").Count,
+			LinearIterations = iterations,
+			PetscLogPath = compute.Backend == CfdComputeBackend.AmdGpuPetsc
+				? "results/petsc-performance.log"
+				: null,
+		};
 	}
 
 	private static string CompatibleSteadyInitialization(
@@ -425,10 +468,13 @@ public sealed class WslOpenFoamRunner
 
 	private static string SteadySolveScript() => """
 		echo FGCFD_PHASE_BEGIN:foamRun
+		solver_start_ns=$(date +%s%N)
 		set +e
 		foamRun -solver fluid 2>&1 | tee solver.log
 		solver_status=${PIPESTATUS[0]}
 		set -e
+		solver_end_ns=$(date +%s%N)
+		awk -v a="$solver_start_ns" -v b="$solver_end_ns" 'BEGIN { printf "FGCFD_FOAMRUN_WALL_SECONDS:%.9f\n", (b-a)/1000000000 }'
 		if test "$solver_status" -ne 0 || grep -Eq 'FOAM FATAL|Floating point exception|nan|inf' solver.log; then
 		  echo fatal-error > run-status.txt
 		  exit 20
@@ -462,10 +508,13 @@ public sealed class WslOpenFoamRunner
 		return """
 			if test ! -f solver-complete; then
 			  echo FGCFD_PHASE_BEGIN:foamRun-transient
+			  solver_start_ns=$(date +%s%N)
 			  set +e
 			  foamRun -solver fluid 2>&1 | tee solver.log
 			  solver_status=${PIPESTATUS[0]}
 			  set -e
+			  solver_end_ns=$(date +%s%N)
+			  awk -v a="$solver_start_ns" -v b="$solver_end_ns" 'BEGIN { printf "FGCFD_FOAMRUN_WALL_SECONDS:%.9f\n", (b-a)/1000000000 }'
 			  if test "$solver_status" -ne 0 || grep -Eq 'FOAM FATAL|Floating point exception|nan|inf' solver.log; then
 			    echo fatal-error > run-status.txt
 			    exit 20

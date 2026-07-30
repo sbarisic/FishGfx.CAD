@@ -20,7 +20,12 @@ public static class CfdCaseStore
 			root = MigrateV1(root);
 			version = 2;
 		}
-		if (version == 2) root = MigrateV2(root);
+		if (version == 2)
+		{
+			root = MigrateV2(root);
+			version = 3;
+		}
+		if (version == 3) root = MigrateV3(root);
 		CfdCaseDocument result = root.Deserialize<CfdCaseDocument>(CfdJson.Options)
 			?? throw new InvalidDataException("The CFD case is empty.");
 		result.Validate();
@@ -99,6 +104,8 @@ public static class CfdCaseStore
 			["solver"] = solver,
 			["solverTemplateVersion"] = toolchain.TemplateVersion,
 			["environmentScriptSha256"] = toolchain.EnvironmentScriptSha256,
+			["compute"] = JsonSerializer.SerializeToNode(document.Compute, CfdJson.Options),
+			["computeToolchain"] = ComputeToolchain(toolchain),
 		};
 		if (document.AnalysisMode == CfdAnalysisMode.Steady)
 			value["postProcessingVersion"] = toolchain.PostProcessingVersion;
@@ -165,7 +172,7 @@ public static class CfdCaseStore
 	private static JsonObject MigrateV2(JsonObject source)
 	{
 		JsonObject result = (JsonObject)source.DeepClone();
-		result["version"] = CfdCaseDocument.CurrentVersion;
+		result["version"] = 3;
 		result["operatingPoint"] = null;
 		result["turbineBoundary"] = JsonSerializer.SerializeToNode(
 			new CfdTurbineBoundarySettings
@@ -175,4 +182,37 @@ public static class CfdCaseStore
 			CfdJson.Options);
 		return result;
 	}
+
+	private static JsonObject MigrateV3(JsonObject source)
+	{
+		JsonObject result = (JsonObject)source.DeepClone();
+		result["version"] = CfdCaseDocument.CurrentVersion;
+		result["compute"] = JsonSerializer.SerializeToNode(
+			CfdComputeSettings.For(CfdComputeBackend.AmdGpuPetsc),
+			CfdJson.Options);
+		return result;
+	}
+
+	private static JsonObject ComputeToolchain(CfdToolchainFingerprint toolchain) => new()
+	{
+		["backend"] = toolchain.ComputeBackend.ToString(),
+		["solverProfile"] = toolchain.SolverProfile,
+		["gpuName"] = toolchain.GpuName,
+		["gpuPciAddress"] = toolchain.GpuPciAddress,
+		["gpuDeviceIndex"] = toolchain.GpuDeviceIndex,
+		["gpuArchitecture"] = toolchain.GpuArchitecture,
+		["rocmVersion"] = toolchain.RocmVersion,
+		["hipVersion"] = toolchain.HipVersion,
+		["petscGitCommit"] = toolchain.PetscGitCommit,
+		["petscConfigurationSha256"] = toolchain.PetscConfigurationSha256,
+		["hypreVersion"] = toolchain.HypreVersion,
+		["hypreConfiguration"] = toolchain.HypreConfiguration,
+		["adapterGitCommit"] = toolchain.AdapterGitCommit,
+		["adapterPortVersion"] = toolchain.AdapterPortVersion,
+		["adapterAbi"] = toolchain.AdapterAbi,
+		["adapterSha256"] = toolchain.AdapterSha256,
+		["gpuManifestSha256"] = toolchain.GpuManifestSha256,
+		["computeEnvironmentScriptPath"] = toolchain.ComputeEnvironmentScriptPath,
+		["computeEnvironmentScriptSha256"] = toolchain.ComputeEnvironmentScriptSha256,
+	};
 }

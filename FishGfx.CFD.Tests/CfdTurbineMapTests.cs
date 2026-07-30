@@ -113,8 +113,9 @@ public sealed class CfdTurbineMapTests
 				.ToDictionary(value => value.Name, value => value.Value);
 			File.WriteAllText(path, JsonSerializer.Serialize(properties, CfdJson.Options));
 			CfdCaseDocument migrated = CfdCaseStore.Load(path);
-			Assert.Equal(3, migrated.Version);
+			Assert.Equal(4, migrated.Version);
 			Assert.Equal(CfdOutletBoundaryMode.WaveTransmissiveFarField, migrated.TurbineBoundary.Mode);
+			Assert.Equal(CfdComputeBackend.AmdGpuPetsc, migrated.Compute.Backend);
 			Assert.Equal(CfdEngineTransientSettings.WaveBoundaryModelLabel,
 				migrated.Results.TransientSummary!.ModelLabel);
 		}
