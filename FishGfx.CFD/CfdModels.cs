@@ -197,7 +197,7 @@ public static class CfdMeshQualityPresets
 
 public sealed record CfdSolverSettings
 {
-	public const double CorsaEstimatedMassFlowKgPerSecond = 0.055;
+	public const double CorsaEstimatedMassFlowKgPerSecond = 0.05398;
 	public double OutletPressurePa { get; init; } = 101325;
 	public double InletTemperatureK { get; init; } = 900;
 	public double TotalMassFlowKgPerSecond { get; init; } = 0.1;
@@ -230,6 +230,90 @@ public enum CfdAnalysisMode
 	EngineTransient,
 }
 
+public enum CfdOutletBoundaryMode
+{
+	WaveTransmissiveFarField,
+	TurbineMapImpedance,
+}
+
+public enum CfdMassFlowMethod
+{
+	CalculatedFromBrakePower,
+	ManualOverride,
+}
+
+public sealed record CfdEngineOperatingPoint
+{
+	public const string A14NetPresetId = "a14net-3500-zero-boost-v1";
+	public string Id { get; init; } = A14NetPresetId;
+	public double DisplacementCc { get; init; } = 1364;
+	public double EngineSpeedRpm { get; init; } = 3500;
+	public double BrakePowerKw { get; init; } = 48;
+	public double BrakeSpecificFuelConsumptionGramsPerKwh { get; init; } = 300;
+	public double StoichiometricAirFuelRatio { get; init; } = 14.7;
+	public double Lambda { get; init; } = 0.85;
+	public double ExhaustTemperatureK { get; init; } = 900;
+	public double TurbineDischargePressurePa { get; init; } = 101325;
+	public double IntakeBoostGaugePa { get; init; }
+	public CfdMassFlowMethod MassFlowMethod { get; init; } = CfdMassFlowMethod.CalculatedFromBrakePower;
+
+	[JsonIgnore]
+	public double FuelMassFlowKgPerSecond =>
+		BrakePowerKw * BrakeSpecificFuelConsumptionGramsPerKwh / 3_600_000.0;
+
+	[JsonIgnore]
+	public double AirMassFlowKgPerSecond =>
+		FuelMassFlowKgPerSecond * StoichiometricAirFuelRatio * Lambda;
+
+	[JsonIgnore]
+	public double ExhaustMassFlowKgPerSecond => FuelMassFlowKgPerSecond + AirMassFlowKgPerSecond;
+
+	[JsonIgnore]
+	public double CycleMassKg => ExhaustMassFlowKgPerSecond * 120.0 / EngineSpeedRpm;
+
+	[JsonIgnore]
+	public double CylinderEventMassKg => CycleMassKg / 4.0;
+
+	public void Validate()
+	{
+		double[] positive =
+		{
+			DisplacementCc, EngineSpeedRpm, BrakePowerKw,
+			BrakeSpecificFuelConsumptionGramsPerKwh, StoichiometricAirFuelRatio,
+			Lambda, ExhaustTemperatureK, TurbineDischargePressurePa,
+		};
+		if (string.IsNullOrWhiteSpace(Id)
+			|| positive.Any(value => !double.IsFinite(value) || value <= 0)
+			|| !double.IsFinite(IntakeBoostGaugePa)
+			|| !Enum.IsDefined(MassFlowMethod))
+		{
+			throw new InvalidDataException("The engine operating point is invalid.");
+		}
+	}
+}
+
+public sealed record CfdTurbineBoundarySettings
+{
+	public const string GarrettG25550PresetId = "garrett-g25-550-049-closed-proxy-v1";
+	public CfdOutletBoundaryMode Mode { get; init; } = CfdOutletBoundaryMode.WaveTransmissiveFarField;
+	public string? PresetId { get; init; }
+	public bool WastegateClosed { get; init; }
+	public double DischargePressurePa { get; init; } = 101325;
+	public double ExhaustTotalTemperatureK { get; init; } = 900;
+
+	public void Validate()
+	{
+		if (!Enum.IsDefined(Mode)
+			|| !double.IsFinite(DischargePressurePa) || DischargePressurePa <= 0
+			|| !double.IsFinite(ExhaustTotalTemperatureK) || ExhaustTotalTemperatureK <= 0
+			|| Mode == CfdOutletBoundaryMode.TurbineMapImpedance
+				&& !string.Equals(PresetId, GarrettG25550PresetId, StringComparison.Ordinal))
+		{
+			throw new InvalidDataException("The turbine boundary settings are invalid.");
+		}
+	}
+}
+
 public enum TransientInitialisationMode
 {
 	Uniform,
@@ -251,8 +335,10 @@ public sealed record CfdEngineTransientSettings
 {
 	public const string CorsaPresetId = "corsa-3500";
 	public const string PulsePresetId = "estimated-exhaust-v1";
-	public const string BoundaryModelLabel =
+	public const string WaveBoundaryModelLabel =
 		"Prescribed-flow inlets, wave-transmissive 101325 Pa far-field outlet, no turbine impedance model.";
+	public const string TurbineBoundaryModelLabel =
+		"A14NET prescribed-flow estimate; Garrett G25-550 0.49 A/R published T25 curve used as a V-band housing proxy; closed wastegate; quasi-steady turbine impedance; no shaft, compressor, or boost-control model.";
 	public const int PulseGeneratorVersion = 2;
 	public const int PeriodicityAlgorithmVersion = 1;
 	public double EngineDisplacementCc { get; init; } = 1364;
@@ -480,6 +566,31 @@ public sealed record CfdTransientFrameMetric
 	public double NominallyClosedTangentialVelocityAreaWeightedMeanMps { get; init; }
 }
 
+public enum CfdTurbineMapRangeState
+{
+	BelowPublishedRange,
+	WithinPublishedRange,
+	AbovePublishedRange,
+	ReverseFlow,
+}
+
+public sealed record CfdTurbineFrameDiagnostic
+{
+	public int FrameIndex { get; init; }
+	public double CrankAngleDegrees { get; init; }
+	public double VolumeFlowCubicMetersPerSecond { get; init; }
+	public double EstimatedPressureDropPa { get; init; }
+	public double EstimatedPressureRatio { get; init; }
+	public CfdTurbineMapRangeState RangeState { get; init; }
+}
+
+public sealed record CfdClosedInletLeakageSummary
+{
+	public int ClosedSamplesChecked { get; init; }
+	public double MaximumAbsoluteTotalFluxKgPerSecond { get; init; }
+	public double MaximumOutwardFaceFluxKgPerSecond { get; init; }
+}
+
 public sealed record CfdTransientResultReference(
 	string RelativePath,
 	string Sha256,
@@ -514,10 +625,16 @@ public sealed record CfdResultSummary
 public sealed record CfdTransientResultSummary
 {
 	public CfdRunStatus Status { get; init; }
-	public string ModelLabel { get; init; } = CfdEngineTransientSettings.BoundaryModelLabel;
+	public string ModelLabel { get; init; } = CfdEngineTransientSettings.WaveBoundaryModelLabel;
 	public double? CycleAveragePressureLossPa { get; init; }
 	public double CycleMassImbalanceFraction { get; init; }
 	public IReadOnlyList<CfdTransientFrameMetric> Frames { get; init; } = [];
+	public IReadOnlyList<CfdTurbineFrameDiagnostic> TurbineFrames { get; init; } = [];
+	public double? CycleAveragePreTurbinePressurePa { get; init; }
+	public double BelowPublishedRangeFraction { get; init; }
+	public double AbovePublishedRangeFraction { get; init; }
+	public double TurbineOutletReverseFlowFraction { get; init; }
+	public CfdClosedInletLeakageSummary? ClosedInletLeakage { get; init; }
 	public string? Diagnostic { get; init; }
 }
 
@@ -538,7 +655,7 @@ public sealed record CfdResidualSample(
 public sealed record CfdCaseDocument
 {
 	public const string SchemaName = "fishgfx.cfd-case";
-	public const int CurrentVersion = 2;
+	public const int CurrentVersion = 3;
 	public string Schema { get; init; } = SchemaName;
 	public int Version { get; init; } = CurrentVersion;
 	public Guid CaseId { get; init; } = Guid.NewGuid();
@@ -551,6 +668,8 @@ public sealed record CfdCaseDocument
 	public CfdAnalysisMode AnalysisMode { get; init; }
 	public CfdMeshSettings Mesh { get; init; } = new();
 	public CfdSolverSettings Solver { get; init; } = new();
+	public CfdEngineOperatingPoint? OperatingPoint { get; init; }
+	public CfdTurbineBoundarySettings TurbineBoundary { get; init; } = new();
 	public CfdEngineTransientSettings? EngineTransient { get; init; }
 	public CfdCaptureSettings Capture { get; init; } = new();
 	public CfdResultStorageSettings ResultStorage { get; init; } = new();
@@ -565,6 +684,8 @@ public sealed record CfdCaseDocument
 	{
 		Mesh.Validate();
 		Solver.Validate();
+		TurbineBoundary.Validate();
+		OperatingPoint?.Validate();
 		ResultStorage.Validate();
 		if (AnalysisMode == CfdAnalysisMode.EngineTransient)
 		{
@@ -572,6 +693,12 @@ public sealed record CfdCaseDocument
 				throw new InvalidDataException("An engine-transient case requires transient settings.");
 			EngineTransient.Validate();
 			Capture.Validate(EngineTransient);
+			if (TurbineBoundary.Mode == CfdOutletBoundaryMode.TurbineMapImpedance
+				&& (OperatingPoint is null || !TurbineBoundary.WastegateClosed))
+			{
+				throw new InvalidDataException(
+					"Turbine-map impedance requires an operating point and a closed wastegate.");
+			}
 		}
 		else if (EngineTransient is not null)
 		{

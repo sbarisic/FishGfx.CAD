@@ -15,8 +15,8 @@ public sealed record CfdPreparedGeometry(
 public static class OpenFoamCaseGenerator
 {
 	public const string TemplateVersion = "openfoam14-steady-compressible-7";
-	public const string TransientTemplateVersion = "openfoam14-transient-engine-22";
-	public const int PostProcessingVersion = 7;
+	public const string TransientTemplateVersion = "openfoam14-transient-engine-31";
+	public const int PostProcessingVersion = 9;
 
 	public static string TemplateVersionFor(CfdAnalysisMode mode) => mode switch
 	{
@@ -52,6 +52,18 @@ public static class OpenFoamCaseGenerator
 		Directory.CreateDirectory(caseDirectory);
 		CopyTemplate(steadyTemplateRoot, caseDirectory, document, path, geometry, pulse);
 		if (overlayRoot != null) CopyTemplate(overlayRoot, caseDirectory, document, path, geometry, pulse);
+		if (document.TurbineBoundary.Mode == CfdOutletBoundaryMode.TurbineMapImpedance)
+		{
+			CfdTurbineMapPreset preset = CfdTurbineMaps.Resolve(document.TurbineBoundary.PresetId);
+			CfdTurbineCurvePoint[] curve = CfdTurbineMaps.BuildFanCurve(
+				preset,
+				document.Solver.Fluid,
+				document.TurbineBoundary);
+			File.WriteAllText(
+				Path.Combine(caseDirectory, "constant", "turbinePressureVsQ.csv"),
+				CfdTurbineMaps.OpenFoamSolverCsv(curve),
+				new UTF8Encoding(false));
+		}
 		string triSurface = Path.Combine(caseDirectory, "constant", "triSurface");
 		Directory.CreateDirectory(triSurface);
 		File.Copy(geometry.MultiRegionStlPath, Path.Combine(triSurface, "gas-domain.stl"), true);
@@ -129,6 +141,9 @@ public static class OpenFoamCaseGenerator
 			["OMEGA_BOUNDARIES"] = Boundaries(path, document, "omega", pulse),
 			["NUT_BOUNDARIES"] = Boundaries(path, document, "nut", pulse),
 			["ALPHAT_BOUNDARIES"] = Boundaries(path, document, "alphat", pulse),
+			["MOMENTUM_TRANSPORT"] = UsesLaminarTurbinePreview(document)
+				? "simulationType laminar;"
+				: "simulationType RAS;\nRAS\n{\n    model kOmegaSST;\n    turbulence on;\n    printCoeffs on;\n}",
 		};
 		if (document.AnalysisMode == CfdAnalysisMode.EngineTransient)
 		{
@@ -148,6 +163,9 @@ public static class OpenFoamCaseGenerator
 				_ => throw new ArgumentOutOfRangeException(nameof(transient.TimeScheme)),
 			};
 			values["MAX_VELOCITY"] = F(transient.MaximumVelocityMetersPerSecond);
+			values["MAX_TURBULENT_K"] = F(
+				0.375 * transient.MaximumVelocityMetersPerSecond
+				* transient.MaximumVelocityMetersPerSecond);
 			values["CYCLE_DURATION"] = F(transient.CycleDurationSeconds);
 			values["PURGE_WRITE"] = I(checked((int)Math.Round(720.0 / transient.SolverAlignmentDegrees)) + 2);
 			values["TRANSIENT_FUNCTIONS"] = TransientFunctions(path);
@@ -162,6 +180,13 @@ public static class OpenFoamCaseGenerator
 		}
 		return content;
 	}
+
+	public static bool UsesLaminarTurbinePreview(CfdCaseDocument document) =>
+		document.AnalysisMode == CfdAnalysisMode.EngineTransient
+		&& document.TurbineBoundary.Mode == CfdOutletBoundaryMode.TurbineMapImpedance
+		&& document.Mesh.LayerCount == 0
+		&& document.Mesh.WallRefinementLevel == 0
+		&& document.Mesh.OpeningRefinementLevel == 0;
 
 	private static (CfdPoint3 Minimum, CfdPoint3 Maximum, int Nx, int Ny, int Nz)
 		BackgroundMesh(CfdPreparedGeometry geometry, CfdMeshSettings mesh, double cellSize)
@@ -273,6 +298,29 @@ public static class OpenFoamCaseGenerator
 	private static string OutletBoundary(string field, CfdCaseDocument document) => field switch
 	{
 		"U" => "    type pressureInletOutletVelocity;\n    value uniform (0 0 0);\n",
+		"p" when UsesLaminarTurbinePreview(document) => TurbinePreviewOutlet(document),
+		"p" when document.AnalysisMode == CfdAnalysisMode.EngineTransient
+			&& document.TurbineBoundary.Mode == CfdOutletBoundaryMode.TurbineMapImpedance =>
+			$"    type fanPressure;\n"
+			+ "    direction out;\n"
+			+ $"    p0 uniform {F(document.TurbineBoundary.DischargePressurePa)};\n"
+			+ "    rho rho;\n"
+			+ "    psi psi;\n"
+			+ $"    gamma {F(document.Solver.Fluid.Gamma)};\n"
+			+ "    fanCurve table;\n"
+			+ "    file \"$FOAM_CASE/constant/turbinePressureVsQ.csv\";\n"
+			+ "    format csv;\n"
+			+ "    nHeaderLine 1;\n"
+			+ "    columns (0 1);\n"
+			+ "    separator \",\";\n"
+			+ "    mergeSeparators no;\n"
+			// fanPressure evaluates its Function1 during nonlinear iterations. A uniform-start
+			// transient can temporarily overshoot the map before the imposed backpressure is
+			// established, so clamp iterations here and enforce the hard 102% limit against
+			// accepted physical frames in CfdTurbineDiagnostics.
+			+ "    outOfBounds clamp;\n"
+			+ "    interpolationScheme linear;\n"
+			+ $"    value uniform {F(document.TurbineBoundary.DischargePressurePa)};\n",
 		"p" when document.AnalysisMode == CfdAnalysisMode.EngineTransient =>
 			$"    type waveTransmissive;\n"
 			+ "    field p;\n"
@@ -291,11 +339,30 @@ public static class OpenFoamCaseGenerator
 		_ => throw new ArgumentOutOfRangeException(nameof(field)),
 	};
 
+	private static string TurbinePreviewOutlet(CfdCaseDocument document)
+	{
+		CfdTurbineMapPreset preset = CfdTurbineMaps.Resolve(document.TurbineBoundary.PresetId);
+		double pressureRatio = CfdTurbineMaps.EstimatePressureRatioForActualMassFlow(
+			preset,
+			document.TurbineBoundary,
+			document.Solver.TotalMassFlowKgPerSecond);
+		double pressure = document.TurbineBoundary.DischargePressurePa * pressureRatio;
+		return $"    type waveTransmissive;\n"
+			+ "    field p;\n"
+			+ "    phi phi;\n"
+			+ "    rho rho;\n"
+			+ "    psi psi;\n"
+			+ $"    gamma {F(document.Solver.Fluid.Gamma)};\n"
+			+ $"    fieldInf {F(pressure)};\n"
+			+ $"    lInf {F(document.EngineTransient!.OutletWaveRelaxationLengthMm / 1000.0)};\n"
+			+ $"    value uniform {F(pressure)};\n";
+	}
+
 	private static string TransientFunctions(GasPathManifest path)
 	{
 		GasOpeningManifest outlet = path.Openings.Single(item => item.Role == "outlet");
 		string patch = MeshPatchName(outlet.PatchName);
-		return $$"""
+		StringBuilder result = new($$"""
 			outletMassFlow
 			{
 			    type surfaceFieldValue;
@@ -329,7 +396,39 @@ public static class OpenFoamCaseGenerator
 			    fields (rho);
 			    operation volIntegrate;
 			}
-			""";
+			""");
+		int index = 0;
+		foreach (GasOpeningManifest inlet in path.Openings.Where(value => value.Role == "inlet")
+			.OrderBy(value => value.PatchName, StringComparer.Ordinal))
+		{
+			string inletPatch = MeshPatchName(inlet.PatchName);
+			result.AppendLine($$"""
+				inletPhiSum{{index}}
+				{
+				    type surfaceFieldValue;
+				    libs ("libfieldFunctionObjects.so");
+				    writeControl timeStep;
+				    writeInterval 1;
+				    writeFields false;
+				    patch {{inletPatch}};
+				    fields (phi);
+				    operation sum;
+				}
+				inletPhiMax{{index}}
+				{
+				    type surfaceFieldValue;
+				    libs ("libfieldFunctionObjects.so");
+				    writeControl timeStep;
+				    writeInterval 1;
+				    writeFields false;
+				    patch {{inletPatch}};
+				    fields (phi);
+				    operation max;
+				}
+				""");
+			++index;
+		}
+		return result.ToString();
 	}
 
 	private static string F(double value) => value.ToString("R", CultureInfo.InvariantCulture);

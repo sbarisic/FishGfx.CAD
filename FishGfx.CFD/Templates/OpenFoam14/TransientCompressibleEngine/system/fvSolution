@@ -32,3 +32,23 @@ PIMPLE
     nNonOrthogonalCorrectors {{PIMPLE_NON_ORTHOGONAL_CORRECTORS}};
     momentumPredictor yes;
 }
+
+// The turbine fan curve is an algebraic pressure/flow coupling.  Relax its
+// pressure feedback and the transported equations within each PIMPLE step so
+// a short exhaust pulse cannot overshoot into a negative ideal-gas state.
+// Time accuracy still comes from the selected ddt scheme; these factors only
+// damp the nonlinear iterations at a single physical time.
+relaxationFactors
+{
+    fields
+    {
+        p               0.5;
+    }
+    equations
+    {
+        U               0.7;
+        h               0.7;
+        k               0.7;
+        omega           0.7;
+    }
+}

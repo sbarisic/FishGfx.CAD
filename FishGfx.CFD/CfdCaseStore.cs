@@ -15,7 +15,12 @@ public static class CfdCaseStore
 		{
 			throw new InvalidDataException("The CFD case schema or version is unsupported.");
 		}
-		if (version == 1) root = MigrateV1(root);
+		if (version == 1)
+		{
+			root = MigrateV1(root);
+			version = 2;
+		}
+		if (version == 2) root = MigrateV2(root);
 		CfdCaseDocument result = root.Deserialize<CfdCaseDocument>(CfdJson.Options)
 			?? throw new InvalidDataException("The CFD case is empty.");
 		result.Validate();
@@ -106,6 +111,14 @@ public static class CfdCaseStore
 			value["pulseTableSha256"] = pulse.Sha256();
 			value["pulseGeneratorVersion"] = CfdEngineTransientSettings.PulseGeneratorVersion;
 			value["periodicityAlgorithmVersion"] = CfdEngineTransientSettings.PeriodicityAlgorithmVersion;
+			value["operatingPoint"] = JsonSerializer.SerializeToNode(document.OperatingPoint, CfdJson.Options);
+			value["turbineBoundary"] = JsonSerializer.SerializeToNode(document.TurbineBoundary, CfdJson.Options);
+			if (document.TurbineBoundary.Mode == CfdOutletBoundaryMode.TurbineMapImpedance)
+			{
+				value["turbineMapPreset"] = JsonSerializer.SerializeToNode(
+					CfdTurbineMaps.Resolve(document.TurbineBoundary.PresetId),
+					CfdJson.Options);
+			}
 		}
 		return CfdJson.Hash(CfdJson.Serialize(value));
 	}
@@ -143,9 +156,23 @@ public static class CfdCaseStore
 	{
 		JsonObject result = (JsonObject)source.DeepClone();
 		JsonNode? steady = result["results"]?.DeepClone();
-		result["version"] = CfdCaseDocument.CurrentVersion;
+		result["version"] = 2;
 		result["analysisMode"] = JsonValue.Create(CfdAnalysisMode.Steady);
 		result["results"] = new JsonObject { ["steady"] = steady };
+		return result;
+	}
+
+	private static JsonObject MigrateV2(JsonObject source)
+	{
+		JsonObject result = (JsonObject)source.DeepClone();
+		result["version"] = CfdCaseDocument.CurrentVersion;
+		result["operatingPoint"] = null;
+		result["turbineBoundary"] = JsonSerializer.SerializeToNode(
+			new CfdTurbineBoundarySettings
+			{
+				Mode = CfdOutletBoundaryMode.WaveTransmissiveFarField,
+			},
+			CfdJson.Options);
 		return result;
 	}
 }

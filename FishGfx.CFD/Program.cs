@@ -22,6 +22,9 @@ internal static class Program
 				"create-transient" when args.Length >= 3 => CreateTransient(args),
 				"set-quality" when args.Length == 3 => SetQuality(args[1], args[2]),
 				"set-mass-flow" when args.Length == 3 => SetMassFlow(args[1], args[2]),
+				"set-engine-preset" when args.Length == 3 => SetEnginePreset(args[1], args[2]),
+				"set-turbine-preset" when args.Length == 3 => SetTurbinePreset(args[1], args[2]),
+				"set-cam-window" when args.Length == 4 => SetCamWindow(args[1], args[2], args[3]),
 				"prepare" when args.Length == 2 => await Prepare(args[1]),
 				"run" when args.Length == 2 => await Run(args[1]),
 				"run-view" when args.Length == 2 => await RunAndView(args[1]),
@@ -122,6 +125,15 @@ internal static class Program
 				? steadyInitialization.Mesh
 				: requestedMesh,
 			Solver = solver,
+			OperatingPoint = new CfdEngineOperatingPoint(),
+			TurbineBoundary = new CfdTurbineBoundarySettings
+			{
+				Mode = CfdOutletBoundaryMode.TurbineMapImpedance,
+				PresetId = CfdTurbineBoundarySettings.GarrettG25550PresetId,
+				WastegateClosed = true,
+				DischargePressurePa = 101325,
+				ExhaustTotalTemperatureK = 900,
+			},
 			Capture = CfdMeshQualityPresets.CorsaCapture(new CfdCaptureSettings(), quality),
 		};
 		CfdCaseStore.Save(fullCase, document);
@@ -197,6 +209,10 @@ internal static class Program
 		document = document with
 		{
 			Solver = document.Solver with { TotalMassFlowKgPerSecond = massFlow },
+			OperatingPoint = document.OperatingPoint is null ? null : document.OperatingPoint with
+			{
+				MassFlowMethod = CfdMassFlowMethod.ManualOverride,
+			},
 			SolveHash = null,
 			CaptureHash = null,
 			ResultHash = null,
@@ -207,6 +223,106 @@ internal static class Program
 			$"Set {fullCase} aggregate mass flow to {massFlow:R} kg/s."));
 		return 0;
 	}
+
+	private static int SetEnginePreset(string casePath, string preset)
+	{
+		if (!string.Equals(preset, CfdEngineOperatingPoint.A14NetPresetId, StringComparison.Ordinal))
+			throw new ArgumentException($"Unsupported engine preset '{preset}'.");
+		string fullCase = Path.GetFullPath(casePath);
+		CfdCaseDocument document = CfdCaseStore.Load(fullCase);
+		if (document.AnalysisMode != CfdAnalysisMode.EngineTransient)
+			throw new InvalidDataException("Engine presets apply only to engine-transient cases.");
+		CfdEngineOperatingPoint operatingPoint = new();
+		document = ClearComputedResults(document with
+		{
+			OperatingPoint = operatingPoint,
+			TurbineBoundary = document.TurbineBoundary with
+			{
+				DischargePressurePa = operatingPoint.TurbineDischargePressurePa,
+				ExhaustTotalTemperatureK = operatingPoint.ExhaustTemperatureK,
+			},
+			Solver = document.Solver with
+			{
+				TotalMassFlowKgPerSecond = operatingPoint.ExhaustMassFlowKgPerSecond,
+				InletTemperatureK = operatingPoint.ExhaustTemperatureK,
+				OutletPressurePa = operatingPoint.TurbineDischargePressurePa,
+			},
+			EngineTransient = document.EngineTransient! with
+			{
+				EngineDisplacementCc = operatingPoint.DisplacementCc,
+				EngineSpeedRpm = operatingPoint.EngineSpeedRpm,
+			},
+		});
+		CfdCaseStore.Save(fullCase, document);
+		Console.WriteLine(FormattableString.Invariant(
+			$"Applied {preset}: exhaust flow {operatingPoint.ExhaustMassFlowKgPerSecond:R} kg/s."));
+		return 0;
+	}
+
+	private static int SetTurbinePreset(string casePath, string preset)
+	{
+		CfdTurbineMapPreset resolved = CfdTurbineMaps.Resolve(preset);
+		string fullCase = Path.GetFullPath(casePath);
+		CfdCaseDocument document = CfdCaseStore.Load(fullCase);
+		if (document.AnalysisMode != CfdAnalysisMode.EngineTransient)
+			throw new InvalidDataException("Turbine presets apply only to engine-transient cases.");
+		CfdEngineOperatingPoint operatingPoint = document.OperatingPoint ?? new();
+		document = ClearComputedResults(document with
+		{
+			OperatingPoint = operatingPoint,
+			TurbineBoundary = new CfdTurbineBoundarySettings
+			{
+				Mode = CfdOutletBoundaryMode.TurbineMapImpedance,
+				PresetId = resolved.Id,
+				WastegateClosed = true,
+				DischargePressurePa = operatingPoint.TurbineDischargePressurePa,
+				ExhaustTotalTemperatureK = operatingPoint.ExhaustTemperatureK,
+			},
+		});
+		CfdCaseStore.Save(fullCase, document);
+		Console.WriteLine($"Applied turbine proxy {resolved.Id} with a closed wastegate.");
+		return 0;
+	}
+
+	private static int SetCamWindow(string casePath, string startValue, string endValue)
+	{
+		double start = ParseFinite(startValue, "Cam-window start");
+		double end = ParseFinite(endValue, "Cam-window end");
+		string fullCase = Path.GetFullPath(casePath);
+		CfdCaseDocument document = CfdCaseStore.Load(fullCase);
+		if (document.AnalysisMode != CfdAnalysisMode.EngineTransient)
+			throw new InvalidDataException("Cam-window settings apply only to engine-transient cases.");
+		CfdEngineTransientSettings transient = document.EngineTransient! with
+		{
+			EventStartDegreesAfterFiring = start,
+			EventEndDegreesAfterFiring = end,
+		};
+		transient.Validate();
+		document = ClearComputedResults(document with { EngineTransient = transient });
+		CfdCaseStore.Save(fullCase, document);
+		Console.WriteLine(FormattableString.Invariant($"Set estimated exhaust event to {start:R}-{end:R} degrees after firing."));
+		return 0;
+	}
+
+	private static double ParseFinite(string value, string name)
+	{
+		if (!double.TryParse(value, System.Globalization.NumberStyles.Float,
+			System.Globalization.CultureInfo.InvariantCulture, out double result)
+			|| !double.IsFinite(result))
+		{
+			throw new ArgumentException($"{name} must be finite.");
+		}
+		return result;
+	}
+
+	private static CfdCaseDocument ClearComputedResults(CfdCaseDocument document) => document with
+	{
+		Toolchain = null,
+		SolveHash = null,
+		CaptureHash = null,
+		ResultHash = null,
+		Results = new CfdCaseResults(),
+	};
 
 	private static int Inspect(string packagePath)
 	{
@@ -362,21 +478,24 @@ internal static class Program
 		}
 
 		string retainedResults = Path.Combine(work, "results");
-		bool reuseCapture = previous.Results.Transient != null
-			&& previous.SolveHash == document.SolveHash
+		string retainedStatusPath = Path.Combine(retainedResults, "run-status.txt");
+		bool reuseCapture = previous.SolveHash == document.SolveHash
+			&& File.Exists(retainedStatusPath)
+			&& File.ReadAllText(retainedStatusPath).Trim() == "transient-complete"
 			&& Directory.Exists(Path.Combine(retainedResults, "VTK"))
 			&& Directory.Exists(Path.Combine(retainedResults, "postProcessing"));
 		OpenFoamRunResult run;
 		if (reuseCapture)
 		{
+			int retainedCycle = ReadRetainedAcceptedCycle(
+				retainedResults,
+				document.EngineTransient!.MaximumCycles);
 			run = new(
-				previous.Results.Transient!.Periodicity.Passed
-					? CfdRunStatus.PeriodicConverged
-					: CfdRunStatus.MaximumCyclesWithoutPeriodicity,
+				CfdRunStatus.MaximumCyclesWithoutPeriodicity,
 				retainedResults,
 				Path.Combine(retainedResults, "run.log"),
 				"Re-ingesting retained transient capture data without solving.",
-				previous.Results.Transient.AcceptedCycle);
+				retainedCycle);
 		}
 		else
 		{
@@ -392,6 +511,7 @@ internal static class Program
 		}
 		if (run.Status is CfdRunStatus.FatalError or CfdRunStatus.Cancelled or CfdRunStatus.TimeStepCollapse)
 		{
+			string diagnostic = TurbineFailureDiagnostic(document, run);
 			document = document with
 			{
 				Results = document.Results with
@@ -399,17 +519,28 @@ internal static class Program
 					TransientSummary = new CfdTransientResultSummary
 					{
 						Status = run.Status,
-						Diagnostic = run.Diagnostic,
+						ModelLabel = BoundaryModelLabel(document),
+						Diagnostic = diagnostic,
 					},
 				},
 			};
 			CfdCaseStore.Save(fullCase, document);
+			Console.Error.WriteLine(diagnostic);
 			return 2;
 		}
 
 		CfdEngineTransientSettings transient = document.EngineTransient!;
 		int acceptedCycle = run.AcceptedCycle ?? transient.MaximumCycles;
 		GasPathManifest path = package.Manifest.Paths.Single(value => value.Id == document.SelectedGasPathId);
+		CfdTransientPulseSet acceptedPulses = CfdTransientPulseGenerator.Generate(
+			transient,
+			document.Solver);
+		CfdClosedInletLeakageSummary leakage = CfdClosedInletLeakage.VerifyAcceptedCycle(
+			run.WindowsResultDirectory,
+			path,
+			acceptedPulses,
+			acceptedCycle,
+			transient);
 		double captureStart = (acceptedCycle - 1) * transient.CycleDurationSeconds;
 		int frameCount = checked((int)Math.Round(720.0 / document.Capture.RetainedOutputAngleDegrees));
 		IEnumerable<CfdFlowFrameSource> frames = OpenFoamResultVerifier.VerifyTransientFrames(
@@ -422,13 +553,38 @@ internal static class Program
 		string resultPath = Path.Combine(resultDirectory, "transient.fgflow");
 		List<CfdTransientFrameMetric> frameMetrics = [];
 		List<CfdTransientFluxSample> fluxSamples = [];
+		List<CfdTurbineFrameDiagnostic> turbineFrames = [];
+		List<double> preTurbinePressures = [];
+		CfdTurbineCurvePoint[]? turbineCurve = document.TurbineBoundary.Mode
+			== CfdOutletBoundaryMode.TurbineMapImpedance
+			? CfdTurbineMaps.BuildFanCurve(
+				CfdTurbineMaps.Resolve(document.TurbineBoundary.PresetId),
+				document.Solver.Fluid,
+				document.TurbineBoundary)
+			: null;
+		double? previewTurbinePressureDrop = OpenFoamCaseGenerator.UsesLaminarTurbinePreview(document)
+			? document.TurbineBoundary.DischargePressurePa *
+				(CfdTurbineMaps.EstimatePressureRatioForActualMassFlow(
+					CfdTurbineMaps.Resolve(document.TurbineBoundary.PresetId),
+					document.TurbineBoundary,
+					document.Solver.TotalMassFlowKgPerSecond) - 1)
+			: null;
 		string resultFileHash = FgFlowWriter.WriteStreaming(
 			resultPath,
 			document.SolveHash!,
 			document.CaptureHash!,
 			acceptedCycle,
 			frameCount,
-			CollectTransientMetrics(frames, document, path, frameMetrics, fluxSamples),
+			CollectTransientMetrics(
+				frames,
+				document,
+				path,
+				frameMetrics,
+				fluxSamples,
+				turbineCurve,
+				previewTurbinePressureDrop,
+				turbineFrames,
+				preTurbinePressures),
 			document.ResultStorage);
 		CfdPeriodicityResult periodicity = OpenFoamTransientMonitor.ReadAndCompareCycle(
 			run.WindowsResultDirectory,
@@ -456,9 +612,23 @@ internal static class Program
 				TransientSummary = new CfdTransientResultSummary
 				{
 					Status = resultStatus,
+					ModelLabel = BoundaryModelLabel(document),
 					CycleAveragePressureLossPa = cyclePressureLoss,
 					CycleMassImbalanceFraction = massImbalance,
 					Frames = frameMetrics,
+					TurbineFrames = turbineFrames,
+					CycleAveragePreTurbinePressurePa = preTurbinePressures.Count == 0
+						? null : preTurbinePressures.Average(),
+					BelowPublishedRangeFraction = Fraction(
+						turbineFrames,
+						CfdTurbineMapRangeState.BelowPublishedRange),
+					AbovePublishedRangeFraction = Fraction(
+						turbineFrames,
+						CfdTurbineMapRangeState.AbovePublishedRange),
+					TurbineOutletReverseFlowFraction = Fraction(
+						turbineFrames,
+						CfdTurbineMapRangeState.ReverseFlow),
+					ClosedInletLeakage = leakage,
 					Diagnostic = periodicity.Passed
 						? $"Cycle {acceptedCycle} satisfies every periodicity criterion."
 						: $"Cycle {acceptedCycle} remains viewable but did not satisfy every periodicity criterion.",
@@ -467,7 +637,66 @@ internal static class Program
 		};
 		CfdCaseStore.Save(fullCase, document);
 		Console.WriteLine($"{document.Results.TransientSummary!.Status}: {resultPath}");
+		Console.WriteLine(FormattableString.Invariant(
+			$"Closed-inlet phi: {leakage.ClosedSamplesChecked} samples, max abs sum {leakage.MaximumAbsoluteTotalFluxKgPerSecond:R} kg/s, max outward face {leakage.MaximumOutwardFaceFluxKgPerSecond:R} kg/s."));
+		if (turbineFrames.Count > 0)
+		{
+			Console.WriteLine(FormattableString.Invariant(
+				$"Turbine proxy: Q {turbineFrames.Min(value => value.VolumeFlowCubicMetersPerSecond):R}..{turbineFrames.Max(value => value.VolumeFlowCubicMetersPerSecond):R} m^3/s, pressure ratio {turbineFrames.Min(value => value.EstimatedPressureRatio):R}..{turbineFrames.Max(value => value.EstimatedPressureRatio):R}, mean pre-turbine pressure {document.Results.TransientSummary.CycleAveragePreTurbinePressurePa:R} Pa, below range {document.Results.TransientSummary.BelowPublishedRangeFraction:P2}, above range {document.Results.TransientSummary.AbovePublishedRangeFraction:P2}, reversal {document.Results.TransientSummary.TurbineOutletReverseFlowFraction:P2}."));
+		}
 		return periodicity.Passed ? 0 : 2;
+	}
+
+	private static string BoundaryModelLabel(CfdCaseDocument document) =>
+		(document.TurbineBoundary.Mode == CfdOutletBoundaryMode.TurbineMapImpedance
+			? CfdEngineTransientSettings.TurbineBoundaryModelLabel
+			: CfdEngineTransientSettings.WaveBoundaryModelLabel)
+		+ (OpenFoamCaseGenerator.UsesLaminarTurbinePreview(document)
+			? " Preview uses laminar transport and map-derived mean wave backpressure; balanced and production use kOmegaSST with instantaneous fanPressure."
+			: string.Empty);
+
+	private static int ReadRetainedAcceptedCycle(string results, int fallback)
+	{
+		string path = Path.Combine(results, "accepted-cycle.txt");
+		return File.Exists(path) && int.TryParse(File.ReadAllText(path).Trim(), out int cycle)
+			? cycle
+			: fallback;
+	}
+
+	private static string TurbineFailureDiagnostic(
+		CfdCaseDocument document,
+		OpenFoamRunResult run)
+	{
+		if (document.TurbineBoundary.Mode != CfdOutletBoundaryMode.TurbineMapImpedance
+			|| !File.Exists(run.LogPath))
+		{
+			return string.IsNullOrWhiteSpace(run.Diagnostic)
+				? $"OpenFOAM ended with {run.Status}. See {run.LogPath}."
+				: run.Diagnostic;
+		}
+		string log = File.ReadAllText(run.LogPath);
+		System.Text.RegularExpressions.Match overflow = System.Text.RegularExpressions.Regex.Match(
+			log,
+			"value \\((?<flow>[0-9eE+\\-.]+)\\) overflow",
+			System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+		if (!overflow.Success
+			|| !double.TryParse(
+				overflow.Groups["flow"].Value,
+				System.Globalization.NumberStyles.Float,
+				System.Globalization.CultureInfo.InvariantCulture,
+				out double observedFlow))
+		{
+			return string.IsNullOrWhiteSpace(run.Diagnostic)
+				? $"OpenFOAM turbine-impedance solve failed. See {run.LogPath}."
+				: run.Diagnostic;
+		}
+		CfdTurbineCurvePoint[] curve = CfdTurbineMaps.BuildFanCurve(
+			CfdTurbineMaps.Resolve(document.TurbineBoundary.PresetId),
+			document.Solver.Fluid,
+			document.TurbineBoundary);
+		double limit = curve[^1].VolumeFlowCubicMetersPerSecond;
+		return FormattableString.Invariant(
+			$"The outlet flow {observedFlow:R} m^3/s exceeded the G25-550 proxy map's hard 102% limit {limit:R} m^3/s. This operating point is outside the published proxy curve under the configured local-static-volume approximation. The solve stopped instead of extrapolating unvalidated turbine behavior. See {run.LogPath}.");
 	}
 
 	private static IEnumerable<CfdFlowFrameSource> CollectTransientMetrics(
@@ -475,7 +704,11 @@ internal static class Program
 		CfdCaseDocument document,
 		GasPathManifest path,
 		List<CfdTransientFrameMetric> metrics,
-		List<CfdTransientFluxSample> fluxes)
+		List<CfdTransientFluxSample> fluxes,
+		CfdTurbineCurvePoint[]? turbineCurve,
+		double? previewTurbinePressureDrop,
+		List<CfdTurbineFrameDiagnostic> turbineFrames,
+		List<double> preTurbinePressures)
 	{
 		foreach (CfdFlowFrameSource frame in frames)
 		{
@@ -493,25 +726,46 @@ internal static class Program
 				closedInlets);
 			metrics.Add(metric);
 			fluxes.Add(flux);
+			if (turbineCurve != null)
+			{
+				LegacyVtkDataSet outlet = frame.Results.Boundaries.Single(value => value.Role == "outlet").Data;
+				(CfdTurbineFrameDiagnostic diagnostic, double pressure) = CfdTurbineDiagnostics.Calculate(
+					frame.Index,
+					frame.CrankAngleDegrees,
+					metric.NetOutletMassFlowKgPerSecond,
+					outlet,
+					turbineCurve,
+					document.TurbineBoundary,
+					previewTurbinePressureDrop);
+				turbineFrames.Add(diagnostic);
+				preTurbinePressures.Add(pressure);
+			}
 			yield return frame;
 		}
 	}
+
+	private static double Fraction(
+		IReadOnlyCollection<CfdTurbineFrameDiagnostic> diagnostics,
+		CfdTurbineMapRangeState state) => diagnostics.Count == 0
+		? 0
+		: diagnostics.Count(value => value.RangeState == state) / (double)diagnostics.Count;
 
 	private static HashSet<string> NominallyClosedInlets(
 		GasPathManifest path,
 		CfdEngineTransientSettings transient,
 		double crankAngleDegrees)
 	{
-		Dictionary<int, double> phases = transient.FiringOrder
-			.Select((cylinder, index) => (cylinder, phase: index * 720.0 / transient.FiringOrder.Length))
+		// VTK-only motion diagnostics retain the nominal window. Acceptance uses the
+		// generated pulse value and OpenFOAM's patch phi in CfdClosedInletLeakage.
+		Dictionary<int, double> phases = transient.FiringOrder.Select((cylinder, index) =>
+			(cylinder, phase: index * 720.0 / transient.FiringOrder.Length))
 			.ToDictionary(value => value.cylinder, value => value.phase);
-		Dictionary<string, int> cylinders = transient.CylinderAssignments
-			.ToDictionary(value => value.ComponentId, value => value.CylinderNumber, StringComparer.Ordinal);
+		Dictionary<string, int> cylinders = transient.CylinderAssignments.ToDictionary(
+			value => value.ComponentId, value => value.CylinderNumber, StringComparer.Ordinal);
 		return path.Openings.Where(value => value.Role == "inlet").Where(opening =>
 		{
 			double local = (crankAngleDegrees - phases[cylinders[opening.ComponentId]] + 720.0) % 720.0;
-			return local < transient.EventStartDegreesAfterFiring
-				|| local > transient.EventEndDegreesAfterFiring;
+			return local < transient.EventStartDegreesAfterFiring || local > transient.EventEndDegreesAfterFiring;
 		}).Select(value => value.PatchName).ToHashSet(StringComparer.Ordinal);
 	}
 
@@ -727,6 +981,9 @@ internal static class Program
 		Console.Error.WriteLine("FishGfx.CFD create-transient <gas.fggas> <case.fgcfd> --preset corsa-3500 [--quality preview|balanced|production] [--initial-steady <case.fgcfd>]");
 		Console.Error.WriteLine("FishGfx.CFD set-quality <case.fgcfd> preview|balanced|production");
 		Console.Error.WriteLine("FishGfx.CFD set-mass-flow <case.fgcfd> <kg/s>");
+		Console.Error.WriteLine("FishGfx.CFD set-engine-preset <case.fgcfd> a14net-3500-zero-boost-v1");
+		Console.Error.WriteLine("FishGfx.CFD set-turbine-preset <case.fgcfd> garrett-g25-550-049-closed-proxy-v1");
+		Console.Error.WriteLine("FishGfx.CFD set-cam-window <case.fgcfd> <start-deg> <end-deg>");
 		Console.Error.WriteLine("FishGfx.CFD prepare <case.fgcfd>");
 		Console.Error.WriteLine("FishGfx.CFD run <case.fgcfd>");
 		Console.Error.WriteLine("FishGfx.CFD run-view <case.fgcfd>");

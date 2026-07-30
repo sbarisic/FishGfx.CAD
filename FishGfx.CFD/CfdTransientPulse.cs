@@ -46,6 +46,21 @@ public sealed record CfdTransientPulseSet(
 
 public static class CfdTransientPulseGenerator
 {
+	internal static double Interpolate(IReadOnlyList<CfdPulseSample> samples, double timeSeconds)
+	{
+		if (samples.Count == 0) throw new InvalidDataException("The pulse table is empty.");
+		if (timeSeconds <= samples[0].TimeSeconds) return samples[0].Value;
+		for (int index = 1; index < samples.Count; ++index)
+		{
+			if (timeSeconds > samples[index].TimeSeconds) continue;
+			CfdPulseSample a = samples[index - 1];
+			CfdPulseSample b = samples[index];
+			double amount = (timeSeconds - a.TimeSeconds) / (b.TimeSeconds - a.TimeSeconds);
+			return a.Value + amount * (b.Value - a.Value);
+		}
+		return samples[^1].Value;
+	}
+
 	public static CfdTransientPulseSet Generate(
 		CfdEngineTransientSettings settings,
 		CfdSolverSettings solver)

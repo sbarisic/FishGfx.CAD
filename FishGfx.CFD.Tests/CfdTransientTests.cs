@@ -229,7 +229,7 @@ public sealed class CfdTransientTests
 	}
 
 	[Fact]
-	public void V1CaseMigratesToSteadyV2()
+	public void V1CaseMigratesThroughV2ToSteadyV3()
 	{
 		string path = Path.Combine(Path.GetTempPath(), $"fishgfx-case-{Guid.NewGuid():N}.fgcfd");
 		try
@@ -241,8 +241,9 @@ public sealed class CfdTransientTests
 				"results":{"status":1,"iterations":5,"residuals":[]}}
 				""");
 			CfdCaseDocument document = CfdCaseStore.Load(path);
-			Assert.Equal(2, document.Version);
+			Assert.Equal(3, document.Version);
 			Assert.Equal(CfdAnalysisMode.Steady, document.AnalysisMode);
+			Assert.Equal(CfdOutletBoundaryMode.WaveTransmissiveFarField, document.TurbineBoundary.Mode);
 			Assert.Equal(5, document.Results.Steady!.Iterations);
 		}
 		finally { File.Delete(path); }

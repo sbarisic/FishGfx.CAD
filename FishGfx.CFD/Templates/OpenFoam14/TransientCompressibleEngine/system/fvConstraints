@@ -1,17 +1,83 @@
 FoamFile { format ascii; class dictionary; location "system"; object fvConstraints; }
 
-// Keep the ideal-gas enthalpy inversion inside its supported temperature range
-// during the startup pressure wave. This is the Foundation 14 limitTemperature
-// constraint used by its compressible-fluid tutorials.
-#includeConstraint limitTemperature(min=200, max=2500)
-
-// Guard the wall functions and pressure correction from a nonphysical,
-// single-cell startup spike. The default is above the expected Corsa pulse
-// velocity and therefore does not clip the prescribed inlet waveform.
-limitVelocity
+limitU
 {
     type            limitMag;
     cellZone        all;
     field           U;
     max             {{MAX_VELOCITY}};
+}
+
+// Keep the ideal-gas state strictly physical during sharp exhaust-pulse
+// reversals.  In particular, omegaWallFunction evaluates nu = mu/rho before
+// its viscous/log-law branch selection, so a zero or negative transient rho
+// can otherwise raise SIGFPE even when the pressure solve subsequently
+// recovers.  These broad safety limits are well outside the intended A14NET
+// operating range and therefore only engage during a numerical excursion.
+boundP
+{
+    type            bound;
+    field           p;
+    min             1000;
+}
+
+limitP
+{
+    type            limitMag;
+    cellZone        all;
+    field           p;
+    max             5000000;
+}
+
+boundRho
+{
+    type            bound;
+    field           rho;
+    min             0.001;
+}
+
+limitRho
+{
+    type            limitMag;
+    cellZone        all;
+    field           rho;
+    max             50;
+}
+
+boundK
+{
+    type            bound;
+    field           k;
+    min             1e-10;
+}
+
+limitK
+{
+    type            limitMag;
+    cellZone        all;
+    field           k;
+    max             {{MAX_TURBULENT_K}};
+}
+
+boundOmega
+{
+    type            bound;
+    field           omega;
+    min             1e-6;
+}
+
+limitOmega
+{
+    type            limitMag;
+    cellZone        all;
+    field           omega;
+    max             1e8;
+}
+
+limitT
+{
+    type            limitTemperature;
+    cellZone        all;
+    min             250;
+    max             1800;
 }

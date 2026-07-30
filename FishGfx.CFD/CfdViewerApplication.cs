@@ -23,7 +23,9 @@ internal sealed partial class CfdViewerApplication : IDisposable
 	private readonly List<CfdStreamline> streamlines = [];
 	private readonly CfdStreamlineCache streamlineCache = new();
 	private CfdSpatialSampleIndex? spatialSampleIndex;
-	private IReadOnlyList<Vector3> streamlineSeeds = [];
+	private CfdBoundaryBvh? boundaryBvh;
+	private IReadOnlyList<CfdBoundaryPatch> currentBoundaries = [];
+	private IReadOnlyList<CfdStreamlineSeed> streamlineSeeds = [];
 	private Task<CfdStreamlineResult>? pendingStreamlineLoad;
 	private CancellationTokenSource? streamlineLoadCancellation;
 	private int streamlineDueFrame = -1;
@@ -105,6 +107,7 @@ internal sealed partial class CfdViewerApplication : IDisposable
 		window.Resized += (_, args) => uiCamera.SetOrthogonal(0, 0, args.Width, args.Height);
 		input = new InputManager(window);
 		volume = results?.Volume;
+		currentBoundaries = results?.Boundaries ?? [];
 		walls = results?.Boundaries.FirstOrDefault(item => item.Role == "walls")?.Data;
 		if (walls != null)
 		{
@@ -141,9 +144,11 @@ internal sealed partial class CfdViewerApplication : IDisposable
 			BuildSlice();
 			BuildArrows();
 			spatialSampleIndex = new(volume.Points);
-			streamlineSeeds = (results?.Boundaries.Where(item => item.Role == "inlet") ?? [])
-				.OrderBy(item => item.Name, StringComparer.Ordinal)
-				.SelectMany(item => SelectInletSeeds(item.Data, 5)).ToArray();
+			if (currentBoundaries.Count > 0)
+			{
+				boundaryBvh = new(currentBoundaries, spatialSampleIndex.CellSize);
+				streamlineSeeds = SelectActiveInletSeeds(currentBoundaries, boundaryBvh, 5);
+			}
 			ScheduleStreamlines(0, sequence?.GetFrameInfo(0).VelocityBlockChecksum ?? "steady", true);
 		}
 		FitCamera();
@@ -335,12 +340,15 @@ internal sealed partial class CfdViewerApplication : IDisposable
 	private void ApplyFrame(CfdResultFrame frame)
 	{
 		volume = frame.Results.Volume;
+		currentBoundaries = frame.Results.Boundaries;
 		walls = frame.Results.Boundaries.FirstOrDefault(value => value.Role == "walls")?.Data;
 		if (surface != null) surface.SetColors(FieldColors(walls, field, surfaceVertices.Length, "walls"));
 		BuildSlice();
 		arrows.Clear();
 		BuildArrows();
 		currentFrameIndex = frame.Info.Index;
+		if (boundaryBvh != null)
+			streamlineSeeds = SelectActiveInletSeeds(currentBoundaries, boundaryBvh, 5);
 		ScheduleStreamlines(frame.Info.Index, frame.Info.VelocityBlockChecksum, !playing);
 		pickedValue = null;
 		RefreshLegend();
@@ -407,6 +415,7 @@ internal sealed partial class CfdViewerApplication : IDisposable
 			spatialSampleIndex,
 			velocities,
 			streamlineSeeds,
+			boundaryBvh,
 			token,
 			frame,
 			checksum));

@@ -47,10 +47,20 @@ public sealed class OpenFoamTemplateTests
 			Assert.Contains("nOuterCorrectors 2", solution);
 			Assert.Contains("nCorrectors 2", solution);
 			Assert.Contains("nNonOrthogonalCorrectors 1", solution);
+			Assert.Contains("p               0.5", solution);
+			Assert.Contains("U               0.7", solution);
+			Assert.Contains("h               0.7", solution);
+			Assert.Contains("k               0.7", solution);
+			Assert.Contains("omega           0.7", solution);
 			string constraints = File.ReadAllText(Path.Combine(target, "system", "fvConstraints"));
 			Assert.Contains("type            limitMag", constraints);
 			Assert.Contains("max             400", constraints);
-			Assert.DoesNotContain("type            limitPressure", constraints);
+			Assert.Contains("field           p", constraints);
+			Assert.Contains("min             1000", constraints);
+			Assert.Contains("max             5000000", constraints);
+			Assert.Contains("field           rho", constraints);
+			Assert.Contains("min             0.001", constraints);
+			Assert.Contains("max             50", constraints);
 			string control = File.ReadAllText(Path.Combine(target, "system", "controlDict"));
 			Assert.Contains("adjustTimeStep yes", control);
 			Assert.Contains("writeControl adjustableRunTime", control);
@@ -129,6 +139,89 @@ public sealed class OpenFoamTemplateTests
 			Assert.Contains("gasDomain_walls { nSurfaceLayers 3; }", snappy);
 			Assert.DoesNotContain("inlet_test { nSurfaceLayers", snappy);
 			Assert.DoesNotContain("outlet_test { nSurfaceLayers", snappy);
+		}
+		finally { Directory.Delete(directory, true); }
+	}
+
+	[Fact]
+	public void GeneratesTurbineFanPressureWithStrictMapLimit()
+	{
+		string directory = Path.Combine(Path.GetTempPath(), $"fishgfx-turbine-foam-{Guid.NewGuid():N}");
+		Directory.CreateDirectory(directory);
+		try
+		{
+			string stl = Path.Combine(directory, "source.stl");
+			File.WriteAllText(stl, "solid walls\nendsolid walls\n");
+			GasOpeningFingerprint fingerprint = new(1000, [0, 0, 0], [0, 0, 1], 1, 100, [], [], "plane");
+			GasOpeningManifest[] openings = Enumerable.Range(1, 4)
+				.Select(index => new GasOpeningManifest($"start{index}", $"inlet_{index}", "inlet", $"runner{index}", fingerprint))
+				.Append(new("end", "outlet", "outlet", "collector", fingerprint)).ToArray();
+			GasPathManifest path = new("collector", "collector", "Collector", "component", openings);
+			GasPackageManifest manifest = new("fishgfx.gas-patches", 1, "mm", new string('0', 64),
+				CadPatchMatchingPolicy.Version1, [path]);
+			CfdCaseDocument document = new()
+			{
+				SelectedGasPathId = path.Id,
+				AnalysisMode = CfdAnalysisMode.EngineTransient,
+				EngineTransient = new CfdEngineTransientSettings
+				{
+					CylinderAssignments = Enumerable.Range(1, 4)
+						.Select(index => new CfdCylinderAssignment(index, $"runner{index}")).ToList(),
+				},
+				OperatingPoint = new CfdEngineOperatingPoint(),
+				Solver = new CfdSolverSettings
+				{
+					TotalMassFlowKgPerSecond = new CfdEngineOperatingPoint().ExhaustMassFlowKgPerSecond,
+				},
+				TurbineBoundary = new CfdTurbineBoundarySettings
+				{
+					Mode = CfdOutletBoundaryMode.TurbineMapImpedance,
+					PresetId = CfdTurbineBoundarySettings.GarrettG25550PresetId,
+					WastegateClosed = true,
+				},
+				Mesh = CfdMeshQualityPresets.Corsa(CfdMeshQuality.Preview),
+			};
+			string target = Path.Combine(directory, "case");
+			OpenFoamCaseGenerator.Generate(target, document,
+				new("fixture", "", "", [], [], manifest),
+				new(stl, new(-.1, -.1, -.1), new(.1, .1, .1), new(0, 0, 0), 40));
+			string pressure = File.ReadAllText(Path.Combine(target, "0", "p"));
+			Assert.Contains("type waveTransmissive", pressure);
+			Assert.Contains("fieldInf 13", pressure);
+			Assert.Contains("rho rho", pressure);
+			string[] csv = File.ReadAllLines(Path.Combine(target, "constant", "turbinePressureVsQ.csv"));
+			Assert.True(csv.Length > 4);
+			Assert.Equal("Q_m3_per_s,fanCurve_Pa", csv[0]);
+			Assert.Equal("0,0", csv[1]);
+			string control = File.ReadAllText(Path.Combine(target, "system", "controlDict"));
+			Assert.Contains("inletPhiSum0", control);
+			Assert.Contains("inletPhiMax3", control);
+			string constraints = File.ReadAllText(Path.Combine(target, "system", "fvConstraints"));
+			Assert.Contains("type            limitMag", constraints);
+			Assert.Contains("field           U", constraints);
+			Assert.Contains("field           p", constraints);
+			Assert.Contains("field           rho", constraints);
+			Assert.Contains("field           k", constraints);
+			Assert.Contains("field           omega", constraints);
+			Assert.Contains("type            limitTemperature", constraints);
+			Assert.Contains("min             250", constraints);
+			Assert.Contains("max             1800", constraints);
+			string momentum = File.ReadAllText(Path.Combine(target, "constant", "momentumTransport"));
+			Assert.Contains("simulationType laminar", momentum);
+
+			string balancedTarget = Path.Combine(directory, "balanced-case");
+			OpenFoamCaseGenerator.Generate(
+				balancedTarget,
+				document with { Mesh = CfdMeshQualityPresets.Corsa(CfdMeshQuality.Balanced) },
+				new("fixture", "", "", [], [], manifest),
+				new(stl, new(-.1, -.1, -.1), new(.1, .1, .1), new(0, 0, 0), 40));
+			string balancedPressure = File.ReadAllText(Path.Combine(balancedTarget, "0", "p"));
+			Assert.Contains("type fanPressure", balancedPressure);
+			Assert.Contains("direction out", balancedPressure);
+			Assert.Contains("outOfBounds clamp", balancedPressure);
+			string balancedMomentum = File.ReadAllText(
+				Path.Combine(balancedTarget, "constant", "momentumTransport"));
+			Assert.Contains("simulationType RAS", balancedMomentum);
 		}
 		finally { Directory.Delete(directory, true); }
 	}

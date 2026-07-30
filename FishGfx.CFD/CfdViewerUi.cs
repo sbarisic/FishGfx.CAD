@@ -76,7 +76,8 @@ internal sealed class CfdViewerUi : IDisposable
 		});
 		if (transient != null)
 		{
-			panel.AddChild(new Label(CfdEngineTransientSettings.BoundaryModelLabel)
+			panel.AddChild(new Label(transientSummary?.ModelLabel
+				?? CfdEngineTransientSettings.WaveBoundaryModelLabel)
 			{
 				Position = new Vector2(12, 30),
 				Size = new Vector2(475, 20),

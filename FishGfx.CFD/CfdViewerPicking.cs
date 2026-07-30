@@ -264,7 +264,17 @@ internal sealed partial class CfdViewerApplication
 	private string StreamlineDescription()
 	{
 		if (resultSequence == null || displayedStreamlineFrame == currentFrameIndex)
-			return $"{streamlines.Count} inlet-seeded paths through U";
+		{
+			int outlets = streamlines.Count(value => value.Termination == CfdStreamlineTermination.Outlet);
+			int walls = streamlines.Count(value => value.Termination == CfdStreamlineTermination.Wall);
+			int inlets = streamlines.Count(value => value.Termination == CfdStreamlineTermination.Inlet);
+			int support = streamlines.Count(value => value.Termination == CfdStreamlineTermination.SampleSupport);
+			int slow = streamlines.Count(value => value.Termination == CfdStreamlineTermination.LowSpeed);
+			int loops = streamlines.Count(value => value.Termination == CfdStreamlineTermination.Loop);
+			int limits = streamlines.Count(value => value.Termination == CfdStreamlineTermination.TraceLimit);
+			int stopped = walls + inlets + support + slow + limits;
+			return $"{streamlines.Count} instantaneous paths: {outlets} outlet, {loops} recirculation, {stopped} stopped";
+		}
 		CfdFrameInfo shown = resultSequence.GetFrameInfo(displayedStreamlineFrame);
 		return $"{streamlines.Count} paths from {shown.CrankAngleDegrees:F0} deg; updating for current frame";
 	}
